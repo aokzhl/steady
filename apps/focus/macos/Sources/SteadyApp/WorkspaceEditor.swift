@@ -14,15 +14,18 @@ final class WorkspaceEditor {
     private var titleError: String?
     private var priorityError: String?
     private var projectError: String?
+    private var noteError: String?
     var selectedProjectID: UUID?
     var draftProjectID: UUID?
     var draftProjectWasChosen = false
     var detailProjectID: UUID?
 
     var detailError: String? {
-        let messages = [titleError, priorityError, projectError].compactMap { $0 }
+        let messages = [titleError, priorityError, projectError, noteError].compactMap { $0 }
         return messages.isEmpty ? nil : messages.joined(separator: "\n")
     }
+    var draftNote: TaskNote = .empty
+    var detailNote: TaskNote = .empty
     var draftTitle = ""
     var draftPriority: TaskPriority = .none
     var detailTitle = ""
@@ -35,7 +38,7 @@ final class WorkspaceEditor {
         workspace?.tasks.first { $0.occurrenceID == selectedID }
     }
 
-    private var draft: CreationDraft { CreationDraft(title: draftTitle, priority: draftPriority, projectID: draftProjectID, projectWasChosen: draftProjectWasChosen) }
+    private var draft: CreationDraft { CreationDraft(title: draftTitle, priority: draftPriority, projectID: draftProjectID, projectWasChosen: draftProjectWasChosen, note: draftNote) }
 
     func openWorkspace() {
         guard workspace == nil else { return }
@@ -47,6 +50,7 @@ final class WorkspaceEditor {
             workspace = opened
             draftTitle = opened.creationDraft?.title ?? ""
             draftPriority = opened.creationDraft?.priority ?? .none
+            draftNote = opened.creationDraft?.note ?? .empty
             draftProjectID = opened.creationDraft?.projectID
             draftProjectWasChosen = opened.creationDraft?.projectWasChosen ?? false
             openingError = nil
@@ -95,6 +99,7 @@ final class WorkspaceEditor {
             try workspace?.discardCreationDraft()
             draftTitle = ""
             draftPriority = .none
+            draftNote = .empty
             draftProjectID = nil
             draftProjectWasChosen = false
             draftError = nil
@@ -107,6 +112,7 @@ final class WorkspaceEditor {
             let task = try workspace.createTaskFromDraft()
             draftTitle = ""
             draftPriority = .none
+            draftNote = .empty
             draftProjectID = nil
             draftProjectWasChosen = false
             draftError = nil
@@ -126,6 +132,8 @@ final class WorkspaceEditor {
         selectedID = task.occurrenceID
         detailTitle = task.title
         detailPriority = task.priority
+        detailNote = task.note
+        noteError = nil
         detailProjectID = task.projectID
         projectError = nil
         titleError = nil
@@ -171,10 +179,25 @@ final class WorkspaceEditor {
     }
 
     @discardableResult
+    func saveNote() -> Bool {
+        guard let task = selectedTask else { return true }
+        guard detailNote != task.note else { noteError = nil; return true }
+        do {
+            try workspace?.setNote(id: task.id, note: detailNote)
+            noteError = nil
+            return true
+        } catch {
+            noteError = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
     func saveDetails() -> Bool {
         guard saveTitle() else { return false }
         guard savePriority() else { return false }
-        return saveProject()
+        guard saveProject() else { return false }
+        return saveNote()
     }
 
     func selectProject(_ id: UUID?) {
@@ -210,6 +233,8 @@ final class WorkspaceEditor {
     func discardDetailEdits() {
         detailTitle = selectedTask?.title ?? ""
         detailPriority = selectedTask?.priority ?? .none
+        detailNote = selectedTask?.note ?? .empty
+        noteError = nil
         detailProjectID = selectedTask?.projectID
         projectError = nil
         titleError = nil

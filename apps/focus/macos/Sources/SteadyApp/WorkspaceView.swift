@@ -270,7 +270,11 @@ private struct CreationPanel: View {
     @State private var confirmingDiscard = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        ScrollView { panelContent.frame(maxWidth: .infinity) }
+    }
+
+    private var panelContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("Новая задача").font(.system(size: 15, weight: .semibold))
                 Spacer()
@@ -300,6 +304,14 @@ private struct CreationPanel: View {
                 get: { editor.draftPriority },
                 set: { editor.draftPriority = $0; editor.saveDraft() }
             ))
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Заметка").font(.system(size: 12)).foregroundStyle(.secondary)
+                TaskNoteEditor(note: Binding(
+                    get: { editor.draftNote },
+                    set: { editor.draftNote = $0; editor.saveDraft() }
+                ), accessibilityID: "creation-note")
+                .frame(height: 180)
+            }
             if let error = editor.draftError {
                 StorageNotice(message: error)
                 Button("Повторить сохранение черновика") { editor.saveDraft() }
@@ -336,7 +348,11 @@ private struct DetailPanel: View {
     @FocusState private var titleFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        ScrollView { panelContent.frame(maxWidth: .infinity) }
+    }
+
+    private var panelContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("Детали задачи").font(.system(size: 15, weight: .semibold))
                 Spacer()
@@ -358,6 +374,14 @@ private struct DetailPanel: View {
                 get: { editor.detailProjectID }, set: { editor.changeProject($0) }
             ))
             PriorityField(selection: Binding(get: { editor.detailPriority }, set: { editor.changePriority($0) }))
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Заметка").font(.system(size: 12)).foregroundStyle(.secondary)
+                TaskNoteEditor(note: Binding(
+                    get: { editor.detailNote },
+                    set: { editor.detailNote = $0; editor.saveNote() }
+                ), accessibilityID: "detail-note")
+                .frame(height: 220)
+            }
             if let error = editor.detailError {
                 StorageNotice(message: error)
                 Button("Повторить сохранение") { editor.saveDetails() }
