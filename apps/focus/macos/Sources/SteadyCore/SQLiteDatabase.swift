@@ -161,6 +161,7 @@ final class SQLiteDatabase {
         if !restoringDraft { try validateLabels(child.labelIDs) }
         try execute("INSERT INTO tasks (id, title, created_at, priority, note_rtf, note_text, parent_task_id) VALUES (?, ?, ?, 'none', ?, ?, ?)", [.text(child.id.uuidString), .text(child.title.trimmingCharacters(in: .whitespacesAndNewlines)), .number(instant.timeIntervalSince1970), .blob(child.note.rtf), .text(child.note.plainText), .text(parentID.uuidString)])
         try setPomodoroParameters(taskID: child.id, parameters: child.pomodoroParameters)
+        if let duration = child.timerDurationSeconds { try setTimerDuration(taskID: child.id, seconds: duration) }
         for label in child.labelIDs {
             try execute("INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)", [.text(child.id.uuidString), .text(label.uuidString)])
         }
@@ -600,6 +601,7 @@ final class SQLiteDatabase {
             for labelID in record.labelIDs {
                 try execute("INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)", [.text(record.id.uuidString), .text(labelID.uuidString)])
             }
+            if let duration = draft?.timerDurationSeconds { try setTimerDuration(taskID: record.id, seconds: duration) }
             if let parameters = draft?.pomodoroParameters { try setPomodoroParameters(taskID: record.id, parameters: parameters) }
             for child in draft == nil ? [] : try rawDraftChildren() { try insertChild(child, parentID: record.id, at: createdAt, restoringDraft: true) }
             try materializeChildren()
@@ -783,6 +785,11 @@ final class SQLiteDatabase {
         try startTimeTool(kind: .pomodoro, occurrenceID: occurrenceID, durationSeconds: nil, at: instant, timeZone: timeZone)
     }
 
+    private func setTimerDuration(taskID: UUID, seconds: TimeInterval) throws {
+        try TimeToolSession.validateTimerDuration(seconds)
+        try execute("INSERT INTO task_timer_settings (task_id, duration_seconds) VALUES (?, ?) ON CONFLICT(task_id) DO UPDATE SET duration_seconds = excluded.duration_seconds", [.text(taskID.uuidString), .number(seconds)])
+    }
+
     func timerDurationSeconds(taskID: UUID) throws -> TimeInterval? {
         try statement("SELECT duration_seconds FROM task_timer_settings WHERE task_id = ?", [.text(taskID.uuidString)]) { query in
             let result = sqlite3_step(query)
@@ -816,9 +823,9 @@ final class SQLiteDatabase {
             if kind == .timer {
                 if duration == nil, let owner { duration = try timerDurationSeconds(taskID: owner.id) }
                 guard let value = duration else { throw WorkspaceError.timerDurationRequired }
-                guard value.isFinite, value > 0, value <= TimeToolSession.maximumTimerDurationSeconds else { throw WorkspaceError.invalidTimerDuration }
+                try TimeToolSession.validateTimerDuration(value)
                 if let owner, durationSeconds != nil {
-                    try execute("INSERT INTO task_timer_settings (task_id, duration_seconds) VALUES (?, ?) ON CONFLICT(task_id) DO UPDATE SET duration_seconds = excluded.duration_seconds", [.text(owner.id.uuidString), .number(value)])
+                    try setTimerDuration(taskID: owner.id, seconds: value)
                 }
             }
             var session = TimeToolSession(
@@ -1029,13 +1036,13 @@ final class SQLiteDatabase {
     }
 
     func creationDraft() throws -> CreationDraft? {
-        try statement("SELECT title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen, recurrence, series_start, labels_were_chosen, children, pomodoro_parameters FROM creation_draft WHERE id = 1") { query in
+        try statement("SELECT title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen, recurrence, series_start, labels_were_chosen, children, pomodoro_parameters, timer_duration_seconds FROM creation_draft WHERE id = 1") { query in
             let result = sqlite3_step(query)
             if result == SQLITE_DONE { return nil }
             guard result == SQLITE_ROW, let priority = TaskPriority(rawValue: text(query, 1)) else {
                 throw failure()
             }
-            return CreationDraft(title: text(query, 0), priority: priority, projectID: UUID(uuidString: text(query, 2)), projectWasChosen: sqlite3_column_int(query, 3) != 0, plannedDay: sqlite3_column_type(query, 6) == SQLITE_NULL ? nil : text(query, 6), dayWasChosen: sqlite3_column_int(query, 7) != 0, note: TaskNote(rtf: blob(query, 4), plainText: text(query, 5)), labelIDs: try labelIDs(taskID: nil), labelsWereChosen: sqlite3_column_int(query, 10) != 0, recurrence: try decodeRecurrence(query, 8), seriesStart: sqlite3_column_type(query, 9) == SQLITE_NULL ? nil : text(query, 9), children: try visibleDraftChildren(JSONDecoder().decode([SubtaskDraft].self, from: blob(query, 11))), pomodoroParameters: sqlite3_column_type(query, 12) == SQLITE_NULL ? nil : try JSONDecoder().decode(PomodoroParameters.self, from: blob(query, 12)))
+            return CreationDraft(title: text(query, 0), priority: priority, projectID: UUID(uuidString: text(query, 2)), projectWasChosen: sqlite3_column_int(query, 3) != 0, plannedDay: sqlite3_column_type(query, 6) == SQLITE_NULL ? nil : text(query, 6), dayWasChosen: sqlite3_column_int(query, 7) != 0, note: TaskNote(rtf: blob(query, 4), plainText: text(query, 5)), labelIDs: try labelIDs(taskID: nil), labelsWereChosen: sqlite3_column_int(query, 10) != 0, recurrence: try decodeRecurrence(query, 8), seriesStart: sqlite3_column_type(query, 9) == SQLITE_NULL ? nil : text(query, 9), children: try visibleDraftChildren(JSONDecoder().decode([SubtaskDraft].self, from: blob(query, 11))), pomodoroParameters: sqlite3_column_type(query, 12) == SQLITE_NULL ? nil : try JSONDecoder().decode(PomodoroParameters.self, from: blob(query, 12)), timerDurationSeconds: sqlite3_column_type(query, 13) == SQLITE_NULL ? nil : sqlite3_column_double(query, 13))
         }
     }
 
@@ -1063,7 +1070,7 @@ final class SQLiteDatabase {
                     INSERT INTO creation_draft (id, title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen, labels_were_chosen, recurrence, series_start) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET title = excluded.title, priority = excluded.priority, project_id = excluded.project_id, project_was_chosen = excluded.project_was_chosen, note_rtf = excluded.note_rtf, note_text = excluded.note_text, planned_day = excluded.planned_day, day_was_chosen = excluded.day_was_chosen, labels_were_chosen = excluded.labels_were_chosen, recurrence = excluded.recurrence, series_start = excluded.series_start
                     """, [.text(draft.title), .text(draft.priority.rawValue), draft.projectID.map { .text($0.uuidString) } ?? .null, .number(draft.projectWasChosen ? 1 : 0), .blob(draft.note.rtf), .text(draft.note.plainText), draft.plannedDay.map { .text($0) } ?? .null, .number(draft.dayWasChosen ? 1 : 0), .number(draft.labelsWereChosen ? 1 : 0), try encodedRecurrence(draft.recurrence), draft.seriesStart.map { .text($0) } ?? .null])
-                try execute("UPDATE creation_draft SET children = ?, pomodoro_parameters = ? WHERE id = 1", [.blob(try JSONEncoder().encode(persistedChildren)), try draft.pomodoroParameters.map { .blob(try JSONEncoder().encode($0)) } ?? .null])
+                try execute("UPDATE creation_draft SET children = ?, pomodoro_parameters = ?, timer_duration_seconds = ? WHERE id = 1", [.blob(try JSONEncoder().encode(persistedChildren)), try draft.pomodoroParameters.map { .blob(try JSONEncoder().encode($0)) } ?? .null, draft.timerDurationSeconds.map { .number($0) } ?? .null])
                 if labelsChanged {
                     try execute("DELETE FROM draft_labels WHERE draft_id = 1")
                     for labelID in draft.labelIDs {
@@ -1173,6 +1180,7 @@ extension SQLiteDatabase {
             try execute("CREATE TABLE pomodoro_selection (id INTEGER PRIMARY KEY CHECK(id = 1), profile_id TEXT NOT NULL REFERENCES pomodoro_profiles(id))")
             try execute("CREATE TABLE task_pomodoro_settings (task_id TEXT PRIMARY KEY REFERENCES tasks(id), parameters BLOB NOT NULL)")
             try execute("ALTER TABLE creation_draft ADD COLUMN pomodoro_parameters BLOB")
+            try execute("ALTER TABLE creation_draft ADD COLUMN timer_duration_seconds REAL")
             let profile = PomodoroProfile(id: UUID(), title: "Обычный", parameters: PomodoroParameters())
             try savePomodoroProfile(profile)
             try selectPomodoroProfile(id: profile.id)

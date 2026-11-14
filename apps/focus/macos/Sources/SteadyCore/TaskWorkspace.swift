@@ -113,6 +113,7 @@ public struct SubtaskDraft: Identifiable, Equatable, Sendable, Codable {
     public var note: TaskNote
     public var labelIDs: Set<UUID>
     public var pomodoroParameters: PomodoroParameters? = nil
+    public var timerDurationSeconds: TimeInterval? = nil
     public init(id: UUID = UUID(), title: String = "", note: TaskNote = .empty, labelIDs: Set<UUID> = []) {
         self.id = id; self.title = title; self.note = note; self.labelIDs = labelIDs
     }
@@ -132,8 +133,10 @@ public struct CreationDraft: Equatable, Sendable {
     public let seriesStart: String?
     public let children: [SubtaskDraft]
     public let pomodoroParameters: PomodoroParameters?
+    public let timerDurationSeconds: TimeInterval?
 
-    public init(title: String = "", priority: TaskPriority = .none, projectID: UUID? = nil, projectWasChosen: Bool = false, plannedDay: String? = nil, dayWasChosen: Bool = false, note: TaskNote = .empty, labelIDs: Set<UUID> = [], labelsWereChosen: Bool = false, recurrence: TaskRecurrence? = nil, seriesStart: String? = nil, children: [SubtaskDraft] = [], pomodoroParameters: PomodoroParameters? = nil) {
+    public init(title: String = "", priority: TaskPriority = .none, projectID: UUID? = nil, projectWasChosen: Bool = false, plannedDay: String? = nil, dayWasChosen: Bool = false, note: TaskNote = .empty, labelIDs: Set<UUID> = [], labelsWereChosen: Bool = false, recurrence: TaskRecurrence? = nil, seriesStart: String? = nil, children: [SubtaskDraft] = [], pomodoroParameters: PomodoroParameters? = nil, timerDurationSeconds: TimeInterval? = nil) {
+        self.timerDurationSeconds = timerDurationSeconds
         self.pomodoroParameters = pomodoroParameters
         self.children = children
         self.recurrence = recurrence
@@ -150,7 +153,7 @@ public struct CreationDraft: Equatable, Sendable {
     }
 
     public var isEmpty: Bool {
-        pomodoroParameters == nil && children.isEmpty && title.isEmpty && priority == .none && projectID == nil && !projectWasChosen && note == .empty && plannedDay == nil && !dayWasChosen && recurrence == nil && seriesStart == nil && labelIDs.isEmpty && !labelsWereChosen
+        timerDurationSeconds == nil && pomodoroParameters == nil && children.isEmpty && title.isEmpty && priority == .none && projectID == nil && !projectWasChosen && note == .empty && plannedDay == nil && !dayWasChosen && recurrence == nil && seriesStart == nil && labelIDs.isEmpty && !labelsWereChosen
     }
 }
 
@@ -354,14 +357,14 @@ public final class TaskWorkspace {
     public func prepareCreationDraft(projectID: UUID? = nil, plannedDay: String? = nil, labelIDs: Set<UUID> = []) throws -> CreationDraft {
         let saved = creationDraft ?? CreationDraft()
         let hasSavedInput = !saved.title.isEmpty || saved.priority != .none || saved.projectID != nil
-            || saved.projectWasChosen || saved.note != .empty || saved.dayWasChosen || saved.recurrence != nil || !saved.labelIDs.isEmpty || saved.labelsWereChosen || !saved.children.isEmpty || saved.pomodoroParameters != nil
+            || saved.projectWasChosen || saved.note != .empty || saved.dayWasChosen || saved.recurrence != nil || !saved.labelIDs.isEmpty || saved.labelsWereChosen || !saved.children.isEmpty || saved.pomodoroParameters != nil || saved.timerDurationSeconds != nil
         let prepared = CreationDraft(
             title: saved.title, priority: saved.priority,
             projectID: creationDraft != nil ? saved.projectID : projectID,
             projectWasChosen: saved.projectWasChosen,
             plannedDay: hasSavedInput ? saved.plannedDay : plannedDay,
             dayWasChosen: saved.dayWasChosen, note: saved.note,
-            labelIDs: creationDraft != nil ? saved.labelIDs : labelIDs, labelsWereChosen: saved.labelsWereChosen, recurrence: saved.recurrence, seriesStart: saved.seriesStart, children: saved.children, pomodoroParameters: saved.pomodoroParameters
+            labelIDs: creationDraft != nil ? saved.labelIDs : labelIDs, labelsWereChosen: saved.labelsWereChosen, recurrence: saved.recurrence, seriesStart: saved.seriesStart, children: saved.children, pomodoroParameters: saved.pomodoroParameters, timerDurationSeconds: saved.timerDurationSeconds
         )
         try saveCreationDraft(prepared)
         return prepared
@@ -369,6 +372,9 @@ public final class TaskWorkspace {
 
     /// Set `replacingLabels` for an explicit picker choice, including an empty selection.
     public func saveCreationDraft(_ draft: CreationDraft, replacingLabels: Bool = false, replacingChildLabels: Set<UUID> = []) throws {
+        for duration in [draft.timerDurationSeconds] + draft.children.map(\.timerDurationSeconds) {
+            if let duration { try TimeToolSession.validateTimerDuration(duration) }
+        }
         try draft.pomodoroParameters?.validate()
         for child in draft.children { try child.pomodoroParameters?.validate() }
         try validateDay(draft.plannedDay)

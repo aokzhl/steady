@@ -275,3 +275,9 @@ public struct PomodoroProfile: Identifiable, Equatable, Sendable {
     public let title: String
     public let parameters: PomodoroParameters
 }
+
+extension TimeToolSession {
+    static func validateTimerDuration(_ value: TimeInterval) throws {
+        guard value.isFinite, value > 0, value <= maximumTimerDurationSeconds else { throw WorkspaceError.invalidTimerDuration }
+    }
+}

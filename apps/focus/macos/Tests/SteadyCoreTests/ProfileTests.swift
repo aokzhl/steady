@@ -57,6 +57,58 @@ struct ProfileTests {
         #expect(final.timeToolResults.map(\.durationSeconds) == [30, 60])
         #expect(final.pomodoroProfiles.first { $0.id == profile.id }?.parameters == PomodoroParameters())
     }
+    @Test func draftTimersPersistAndCreateIndependentParentAndChildSettings() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        let workspace = try TaskWorkspace(databaseURL: url)
+        var child = SubtaskDraft(title: "Child")
+        child.timerDurationSeconds = 120
+        let unsetChild = SubtaskDraft(title: "Not set")
+        let draft = CreationDraft(title: "Parent", children: [child, unsetChild], timerDurationSeconds: 300)
+        try workspace.saveCreationDraft(draft)
+        let reopened = try TaskWorkspace(databaseURL: url)
+        #expect(reopened.creationDraft == draft)
+        #expect(try reopened.prepareCreationDraft(plannedDay: "2026-12-01") == draft)
+        let parent = try reopened.createTaskFromDraft()
+        #expect(reopened.creationDraft == nil)
+        let final = try TaskWorkspace(databaseURL: url)
+        let savedChild = try #require(final.tasks.first { $0.id == child.id })
+        let savedUnset = try #require(final.tasks.first { $0.id == unsetChild.id })
+        #expect(try final.timerDurationSeconds(taskID: parent.id) == 300)
+        #expect(try final.timerDurationSeconds(taskID: child.id) == 120)
+        #expect(try final.timerDurationSeconds(taskID: unsetChild.id) == nil)
+        #expect(throws: WorkspaceError.timerDurationRequired) { try final.startTimer(occurrenceID: savedUnset.occurrenceID) }
+        #expect(final.activeSession == nil)
+        try final.startTimer(occurrenceID: savedChild.occurrenceID)
+        #expect(final.activeSession?.timerBudgetSeconds == 120)
+        try final.stopSession()
+        try final.startTimer(occurrenceID: parent.occurrenceID)
+        #expect(final.activeSession?.timerBudgetSeconds == 300)
+    }
+    @Test(arguments: [0.0, -1.0, Double.infinity, Double.nan, TimeToolSession.maximumTimerDurationSeconds.nextUp])
+    func invalidDraftTimerLeavesSavedDraftAndTasksUnchanged(seconds: Double) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        let workspace = try TaskWorkspace(databaseURL: url)
+        let saved = CreationDraft(timerDurationSeconds: 90)
+        try workspace.saveCreationDraft(saved)
+        #expect(throws: WorkspaceError.invalidTimerDuration) {
+            try workspace.saveCreationDraft(CreationDraft(title: "Invalid parent", timerDurationSeconds: seconds))
+        }
+        var child = SubtaskDraft(title: "Invalid child")
+        child.timerDurationSeconds = seconds
+        #expect(throws: WorkspaceError.invalidTimerDuration) {
+            try workspace.saveCreationDraft(CreationDraft(title: "Parent", children: [child]))
+        }
+        let reopened = try TaskWorkspace(databaseURL: url)
+        #expect(reopened.creationDraft == saved)
+        #expect(reopened.tasks.isEmpty)
+        #expect(reopened.activeSession == nil)
+        try reopened.discardCreationDraft()
+        #expect(try TaskWorkspace(databaseURL: url).creationDraft == nil)
+    }
     @Test(arguments: [12, 13]) func legacyDraftChildrenAndSessionSnapshotsSurviveProfileMigration(version: Int) throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -148,10 +200,12 @@ struct ProfileTests {
         }
         let draft = try #require(workspace.creationDraft)
         #expect(draft.pomodoroParameters == nil)
+        #expect(draft.timerDurationSeconds == nil)
         #expect(draft.projectWasChosen && draft.dayWasChosen && draft.labelsWereChosen)
         #expect(draft.note == TaskNote(rtf: Data([0, 254]), plainText: "Текст"))
         #expect(draft.children.first?.id == UUID(uuidString: "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC"))
         #expect(draft.children.first?.pomodoroParameters == nil)
+        #expect(draft.children.first?.timerDurationSeconds == nil)
         #expect(draft.children.first?.note == TaskNote(rtf: Data([0, 255]), plainText: "Своя заметка"))
         #expect(draft.children.first?.labelIDs == Set(workspace.labels.map(\.id)))
         #expect(workspace.timeToolResults.first?.pomodoro?.parameters == PomodoroParameters())

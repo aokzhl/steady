@@ -84,8 +84,9 @@ import Testing
         defer { try? FileManager.default.removeItem(at: directory); try? FileManager.default.removeItem(at: moved) }
         let url = directory.appendingPathComponent("steady.sqlite")
         let workspace = try TaskWorkspace(databaseURL: url)
-        let child = SubtaskDraft(title: "Child", note: TaskNote(plainText: "Keep this"))
-        let draft = CreationDraft(title: "Parent", children: [child])
+        var child = SubtaskDraft(title: "Child", note: TaskNote(plainText: "Keep this"))
+        child.timerDurationSeconds = 120
+        let draft = CreationDraft(title: "Parent", children: [child], timerDurationSeconds: 300)
         try workspace.saveCreationDraft(draft)
         try FileManager.default.moveItem(at: directory, to: moved)
         try Data().write(to: directory)
@@ -99,6 +100,8 @@ import Testing
         let parent = try retry.createTaskFromDraft()
         let reopened = try TaskWorkspace(databaseURL: url)
         #expect(reopened.children(of: parent.occurrenceID).first?.id == child.id)
+        #expect(try reopened.timerDurationSeconds(taskID: parent.id) == 300)
+        #expect(try reopened.timerDurationSeconds(taskID: child.id) == 120)
         #expect(reopened.creationDraft == nil)
     }
 
