@@ -13,7 +13,7 @@ TaskWorkspace is the agreed public seam. Its injected `now` and `calendar` drive
 
 ## Persistence and handoff
 
-Migration v2 → v3 adds `time_tool_runs` and `time_tool_segments`. Real instants are numeric UTC epochs (`REAL`); duration is derived from disjoint work intervals in seconds. The session's time zone is fixed at start, independent of later Mac-zone changes. Segment IDs survive pause/resume and save retries; the run ID also identifies the completed result. A partial unique index enforces one unfinished run, including paused runs. Transactions commit commands immediately; closed results use the same durable records, suitable for a later delivery queue without manufacturing another result identity.
+Migration v4 → v5 adds `time_tool_runs` and `time_tool_segments`. Real instants are numeric UTC epochs (`REAL`); duration is derived from disjoint work intervals in seconds. The session's time zone is fixed at start, independent of later Mac-zone changes. Segment IDs survive pause/resume and save retries; the run ID also identifies the completed result. A partial unique index enforces one unfinished run, including paused runs. Transactions commit commands immediately; closed results use the same durable records, suitable for a later delivery queue without manufacturing another result identity.
 
 `TimeToolSession.elapsedSeconds(at:)` includes the currently open segment. `durationSeconds` describes closed work/results. `TaskWorkspace.timeToolResults` contains stopped runs; `activeSession` contains the unfinished run. `reload()` refreshes these without changing its clock state. This slice does not implement countdown/pomodoro, delivery, reporting or system-event handling.
 

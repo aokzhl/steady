@@ -191,4 +191,50 @@ struct StopwatchTests {
         #expect(reopened.timeToolResults.first?.taskID == old.id)
     }
 
+    @Test
+    func versionFourProjectsNotesAndDraftChoiceSurviveStopwatchMigration() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("steady.sqlite")
+        let fixture = Process()
+        fixture.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        fixture.arguments = [url.path, """
+            CREATE TABLE projects (id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, color TEXT, created_at REAL NOT NULL);
+            CREATE TABLE tasks (id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, created_at REAL NOT NULL, priority TEXT NOT NULL, project_id TEXT REFERENCES projects(id), note_rtf BLOB NOT NULL, note_text TEXT NOT NULL);
+            CREATE TABLE task_occurrences (id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id), planned_day TEXT NOT NULL, time_zone TEXT NOT NULL, completed_at REAL);
+            CREATE TABLE creation_draft (id INTEGER PRIMARY KEY, title TEXT NOT NULL, priority TEXT NOT NULL, project_id TEXT REFERENCES projects(id), project_was_chosen INTEGER NOT NULL, note_rtf BLOB NOT NULL, note_text TEXT NOT NULL);
+            INSERT INTO projects VALUES ('33333333-3333-3333-3333-333333333333', 'Учёба', 'green', 1800000000);
+            INSERT INTO tasks VALUES ('11111111-1111-1111-1111-111111111111', 'Читать', 1800000000, 'high', '33333333-3333-3333-3333-333333333333', X'7b5c72746631207d', 'Заметка дела');
+            INSERT INTO task_occurrences VALUES ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', '2026-11-12', 'Asia/Almaty', NULL);
+            INSERT INTO creation_draft VALUES (1, '', 'none', NULL, 1, X'7b5c72746631207d', 'Заметка черновика');
+            PRAGMA user_version = 4;
+            """]
+        try fixture.run()
+        fixture.waitUntilExit()
+        try #require(fixture.terminationStatus == 0)
+        var instant = Date(timeIntervalSince1970: 1_800_000_000)
+        let workspace = try TaskWorkspace(databaseURL: url, now: { instant })
+        let old = try #require(workspace.tasks.first)
+        #expect(workspace.projects.first?.title == "Учёба")
+        #expect(workspace.projects.first?.color == .green)
+        #expect(old.projectID == workspace.projects.first?.id)
+        #expect(old.note.plainText == "Заметка дела")
+        #expect(old.note.rtf == Data([0x7b, 0x5c, 0x72, 0x74, 0x66, 0x31, 0x20, 0x7d]))
+        let draft = try #require(workspace.creationDraft)
+        #expect(draft.projectID == nil)
+        #expect(draft.projectWasChosen)
+        #expect(!draft.isEmpty)
+        #expect(draft.note.plainText == "Заметка черновика")
+        #expect(draft.note.rtf == old.note.rtf)
+        try workspace.startStopwatch(occurrenceID: old.occurrenceID)
+        instant += 60
+        try workspace.stopSession()
+        let reopened = try TaskWorkspace(databaseURL: url)
+        #expect(reopened.tasks == [old])
+        #expect(reopened.projects == workspace.projects)
+        #expect(reopened.creationDraft == draft)
+        #expect(reopened.timeToolResults.first?.durationSeconds == 60)
+    }
+
 }

@@ -427,9 +427,7 @@ private struct DetailPanel: View {
             }
             Label(task.completedAt == nil ? "Не выполнено" : "Выполнено", systemImage: task.completedAt == nil ? "circle" : "checkmark.circle")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
-            ScrollView {
-                RunHistory(results: editor.workspace?.timeToolResults.filter { $0.occurrenceID == task.occurrenceID } ?? [])
-            }
+            RunHistory(results: editor.workspace?.timeToolResults.filter { $0.occurrenceID == task.occurrenceID } ?? [])
             Spacer(minLength: 0)
         }
         .padding(22)
