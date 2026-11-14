@@ -161,6 +161,7 @@ public final class TaskWorkspace {
     public private(set) var activeSession: TimeToolSession?
     public private(set) var timeToolResults: [TimeToolSession] = []
     public private(set) var creationDraft: CreationDraft?
+    public private(set) var preferences: WorkspacePreferences
     private var pendingPausedSession: TimeToolSession?
     public var sessionNeedsSave: Bool { pendingPausedSession != nil }
     private let database: SQLiteDatabase
@@ -173,6 +174,7 @@ public final class TaskWorkspace {
         self.calendar = calendar
         self.dayContext = DayContext(date: now(), calendar: calendar())
         self.database = try SQLiteDatabase(url: databaseURL)
+        self.preferences = try database.workspacePreferences()
         self.lastDeletedLabel = try database.lastDeletedLabel()
         self.labels = try database.labels()
         self.projects = try database.projects()
@@ -181,6 +183,20 @@ public final class TaskWorkspace {
         self.creationDraft = try database.creationDraft()
         self.activeSession = try database.activeTimeToolSession()
         self.timeToolResults = try database.timeToolResults()
+    }
+
+    public func savePreferences(_ preferences: WorkspacePreferences) throws {
+        try database.saveWorkspacePreferences(preferences)
+        self.preferences = preferences
+    }
+
+    /// Materializes the selected bounded period while keeping read-only list rendering pure.
+    public func prepareTaskList(in context: TaskListContext) throws {
+        var current = Calendar(identifier: .gregorian)
+        current.timeZone = calendar().timeZone
+        let date = now()
+        let bounds = periodBounds(for: context.period, at: date, calendar: current)
+        tasks = try database.refreshOccurrences(today: today, timeZone: current.timeZone.identifier, through: bounds.end)
     }
 
     @discardableResult
@@ -622,5 +638,99 @@ public final class TaskWorkspace {
             formatter.dateFormat = "yyyy-MM-dd"
             return formatter.string(from: date)
         }
+    }
+}
+
+extension TaskWorkspace {
+    /// One calendar definition serves occurrence materialization and list filtering.
+    private func periodBounds(for period: TaskPeriod, at date: Date, calendar: Calendar) -> (start: String, end: String) {
+        let start: Date
+        let end: Date
+        switch period {
+        case .week:
+            let offset = (calendar.component(.weekday, from: date) + 5) % 7
+            start = calendar.date(byAdding: .day, value: -offset, to: date)!
+            end = calendar.date(byAdding: .day, value: 6, to: start)!
+        case .month:
+            let month = calendar.dateInterval(of: .month, for: date)!
+            start = month.start
+            end = calendar.date(byAdding: .day, value: -1, to: month.end)!
+        case .tomorrow:
+            start = calendar.date(byAdding: .day, value: 1, to: date)!
+            end = start
+        case .all, .today, .completed:
+            start = date
+            end = date
+        }
+        return (DayContext(date: start, calendar: calendar).day, DayContext(date: end, calendar: calendar).day)
+    }
+
+    public func taskList(in context: TaskListContext) -> TaskListResult {
+        let date = now()
+        var current = Calendar(identifier: .gregorian)
+        current.timeZone = calendar().timeZone
+        let day = DayContext(date: date, calendar: current)
+        let bounds = periodBounds(for: context.period, at: date, calendar: current)
+        let source = context.period == .all ? visibleTasks : tasks
+        let periodMatches = source.filter { task in
+            if context.period == .completed { return task.completedAt != nil }
+            guard task.skippedAt == nil, context.showCompleted || task.completedAt == nil else { return false }
+            switch context.period {
+            case .all: return true
+            case .completed: return false
+            case .today:
+                if let completedAt = task.completedAt { return day.contains(completedAt) }
+                if let end = task.periodEnd, let start = task.seriesDay {
+                    return start <= day.day && day.day <= end && task.plannedDay.map { $0 <= day.day } != false
+                }
+                return task.plannedDay.map { task.seriesStart == nil ? $0 <= day.day : $0 == day.day } ?? false
+            case .tomorrow:
+                if let end = task.periodEnd, let start = task.seriesDay, task.plannedDay == nil { return start <= bounds.start && bounds.start <= end }
+                return task.plannedDay == bounds.start
+            case .week, .month:
+                if let periodEnd = task.periodEnd, let periodStart = task.seriesDay, task.plannedDay == nil {
+                    return periodStart <= bounds.end && bounds.start <= periodEnd
+                }
+                return task.plannedDay.map { bounds.start <= $0 && $0 <= bounds.end } ?? false
+            }
+        }
+        let matches = periodMatches.filter { task in
+            guard context.projectID == nil || task.projectID == context.projectID else { return false }
+            return context.labelIDs.isEmpty || (context.labelMatch == .any ? !task.labelIDs.isDisjoint(with: context.labelIDs) : context.labelIDs.isSubset(of: task.labelIDs))
+        }
+        let matchIDs = Set(matches.map(\.occurrenceID))
+        let parents = Set(matches.compactMap(\.parentOccurrenceID))
+        let roots = tasks.filter { $0.parentTaskID == nil && (matchIDs.contains($0.occurrenceID) || parents.contains($0.occurrenceID)) }
+        let contextParents = Set(roots.filter { !matchIDs.contains($0.occurrenceID) }.map(\.occurrenceID))
+        func count(_ roots: [TaskRecord]) -> Int {
+            let ids = Set(roots.map(\.occurrenceID))
+            return matches.filter { ids.contains($0.occurrenceID) || $0.parentOccurrenceID.map(ids.contains) == true }.count
+        }
+        var groups: [TaskListGroup] = []
+        let overdue = roots.filter { root in
+            matches.contains { task in
+                (task.occurrenceID == root.occurrenceID || task.parentOccurrenceID == root.occurrenceID)
+                    && task.completedAt == nil && task.seriesStart == nil && task.plannedDay.map { $0 < day.day } == true
+            }
+        }
+        if !overdue.isEmpty { groups.append(TaskListGroup(id: "overdue", title: "Просроченные", roots: overdue, matchCount: count(overdue))) }
+        let overdueIDs = Set(overdue.map(\.occurrenceID))
+        let weekly = context.period == .today ? roots.filter { root in
+            matches.contains { task in
+                (task.occurrenceID == root.occurrenceID || task.parentOccurrenceID == root.occurrenceID)
+                    && task.periodEnd != nil && task.plannedDay == nil && task.completedAt == nil
+            }
+        } : []
+        if !weekly.isEmpty { groups.append(TaskListGroup(id: "weekly-undated", title: "Можно на этой неделе", roots: weekly, matchCount: count(weekly))) }
+        let weeklyIDs = Set(weekly.map(\.occurrenceID))
+        let rest = roots.filter { !overdueIDs.contains($0.occurrenceID) && !weeklyIDs.contains($0.occurrenceID) }
+        for project in projects {
+            let group = rest.filter { $0.projectID == project.id }
+            if !group.isEmpty { groups.append(TaskListGroup(id: project.id.uuidString, title: project.title, roots: group, matchCount: count(group))) }
+        }
+        let unassigned = rest.filter { $0.projectID == nil }
+        if !unassigned.isEmpty { groups.append(TaskListGroup(id: "unassigned", title: "Без проекта", roots: unassigned, matchCount: count(unassigned))) }
+        let empty: TaskListEmptyReason? = matches.isEmpty ? (tasks.isEmpty ? .emptyDatabase : periodMatches.isEmpty ? .emptyPeriod : .noMatches) : nil
+        return TaskListResult(matches: matches, roots: roots, contextParentIDs: contextParents, groups: groups, emptyReason: empty)
     }
 }

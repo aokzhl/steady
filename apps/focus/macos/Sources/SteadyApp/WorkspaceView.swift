@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SteadyCore
 import SwiftUI
@@ -11,7 +12,6 @@ private enum Palette {
 
 struct WorkspaceView: View {
     @Bindable var editor: WorkspaceEditor
-    @State private var sidebarVisible = true
     @State private var projectEditorVisible = false
     @State private var labelEditorVisible = false
     @State private var editingLabel: LabelRecord?
@@ -25,12 +25,21 @@ struct WorkspaceView: View {
             header
             Divider()
             HStack(spacing: 0) {
-                if sidebarVisible {
+                if editor.sidebarVisible {
                     sidebar
                     Divider()
                 }
-                taskList
-                if editor.workspace != nil {
+                if editor.screen == .report {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 24) {
+                            Text("Отчёт").font(.system(size: 24, weight: .semibold))
+                            RunHistory(results: editor.workspace?.timeToolResults ?? [])
+                        }.padding(26).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else {
+                    taskList
+                }
+                if editor.workspace != nil, editor.screen == .tasks {
                     if editor.isCreating {
                         Divider()
                         CreationPanel(editor: editor)
@@ -85,7 +94,7 @@ struct WorkspaceView: View {
 
     private var header: some View {
         HStack(spacing: 14) {
-            Button { sidebarVisible.toggle() } label: {
+            Button { editor.sidebarVisible.toggle() } label: {
                 Image(systemName: "sidebar.left")
             }
             .buttonStyle(.plain)
@@ -123,9 +132,15 @@ struct WorkspaceView: View {
                 Label("Все задачи", systemImage: "list.bullet")
                     .font(.system(size: 13, weight: .medium))
                     .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(editor.selectedProjectID == nil && editor.selectedLabelID == nil ? Palette.accent.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                    .background(editor.screen == .tasks && editor.selectedProjectID == nil && editor.context.labelIDs.isEmpty ? Palette.accent.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
             }
             .buttonStyle(.plain)
+            Button(action: editor.openReport) {
+                Label("Отчёт", systemImage: "chart.bar")
+                    .font(.system(size: 13, weight: .medium))
+                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(editor.screen == .report ? Palette.accent.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
+            }.buttonStyle(.plain).accessibilityIdentifier("report-navigation")
             HStack {
                 Text("Проекты").font(.system(size: 11)).foregroundStyle(.secondary)
                 Spacer()
@@ -145,7 +160,7 @@ struct WorkspaceView: View {
                                     .foregroundStyle(.secondary)
                             }
                             .font(.system(size: 12)).padding(10)
-                            .background(editor.selectedProjectID == project.id ? Palette.accent.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                            .background(editor.screen == .tasks && editor.selectedProjectID == project.id ? Palette.accent.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
                         }
                         .buttonStyle(.plain)
                         .contextMenu {
@@ -169,7 +184,7 @@ struct WorkspaceView: View {
                                 Spacer()
                             }
                             .font(.system(size: 12)).padding(10)
-                            .background(editor.selectedLabelID == label.id ? Palette.accent.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                            .background(editor.screen == .tasks && editor.context.labelIDs.contains(label.id) ? Palette.accent.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
                         }
                         .buttonStyle(.plain)
                         .contextMenu {
@@ -190,9 +205,10 @@ struct WorkspaceView: View {
     }
 
     private var taskList: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        let result = editor.listResult
+        return VStack(alignment: .leading, spacing: 18) {
             HStack {
-                Text(editor.workspace?.labels.first { $0.id == editor.selectedLabelID }?.title ?? editor.workspace?.projects.first { $0.id == editor.selectedProjectID }?.title ?? "Все задачи")
+                Text(editor.contextTitle)
                     .font(.system(size: 24, weight: .semibold))
                 if let project = editor.workspace?.projects.first(where: { $0.id == editor.selectedProjectID }) {
                     Button { editingProject = project; projectEditorVisible = true } label: { Image(systemName: "pencil") }
@@ -208,14 +224,40 @@ struct WorkspaceView: View {
                 Label("Список", systemImage: "list.bullet")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
             }
-            Picker("Период", selection: Binding(get: { editor.period }, set: { editor.selectPeriod($0) })) {
-                Text("Все").tag(TaskPeriod.all)
-                Text("Сегодня").tag(TaskPeriod.today)
-                Text("Завтра").tag(TaskPeriod.tomorrow)
-                Text("Неделя").tag(TaskPeriod.week)
-                Text("История").tag(TaskPeriod.history)
+            HStack(spacing: 8) {
+                ForEach([TaskPeriod.all, .today, .tomorrow], id: \.self) { period in
+                    periodButton(period)
+                }
+                MorePeriods(selected: editor.period, select: editor.selectPeriod)
+                periodButton(.completed)
             }
-            .pickerStyle(.segmented).frame(maxWidth: 450)
+            HStack(spacing: 12) {
+                Menu {
+                    ForEach(editor.workspace?.labels ?? []) { label in
+                        Toggle(label.title, isOn: Binding(get: { editor.context.labelIDs.contains(label.id) }, set: { _ in editor.selectLabel(label.id) }))
+                    }
+                    Divider()
+                    Picker("Условие", selection: $editor.context.labelMatch) {
+                        Text("Любая из выбранных").tag(LabelMatch.any)
+                        Text("Все выбранные").tag(LabelMatch.all)
+                    }
+                    if !editor.context.labelIDs.isEmpty {
+                        Button("Сбросить метки") { editor.context.labelIDs = [] }
+                    }
+                } label: {
+                    Label(editor.context.labelIDs.isEmpty ? "Метки · любая" : "Метки: \(editor.context.labelIDs.count) · \(editor.context.labelMatch == .any ? "любая" : "все")", systemImage: "tag")
+                }
+                .accessibilityIdentifier("task-label-filter")
+                if editor.period != .completed {
+                    Toggle("Показать выполненные", isOn: $editor.context.showCompleted)
+                        .toggleStyle(.checkbox).font(.system(size: 11))
+                }
+                if editor.selectedProjectID != nil || !editor.context.labelIDs.isEmpty {
+                    Button("Сбросить фильтры") { editor.selectProject(nil) }
+                        .buttonStyle(.plain).font(.system(size: 11))
+                }
+            }
+
 
 
             if let openingError = editor.openingError {
@@ -246,45 +288,14 @@ struct WorkspaceView: View {
                 }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
-                        let source = editor.period == .all ? workspace.visibleTasks : workspace.tasks
-                        let matches = source.filter { editor.matchesContext($0) && editor.matchesPeriod($0) }
-                        let matching = source.filter { task in
-                            task.parentTaskID == nil && (matches.contains { $0.occurrenceID == task.occurrenceID } || matches.contains { $0.parentOccurrenceID == task.occurrenceID })
-                        }
-                        let open = matching.filter { $0.completedAt == nil && $0.skippedAt == nil }
-                        let completed = matching.filter { $0.completedAt != nil }
-                        let skipped = matching.filter { $0.skippedAt != nil }
-                        if open.isEmpty, completed.isEmpty, skipped.isEmpty {
-                            emptyState
-                        } else {
-                            let overdue = editor.period == .today ? open.filter { $0.seriesStart == nil && $0.plannedDay.map { $0 < workspace.today } == true } : []
-                            if !overdue.isEmpty {
-                                sectionLabel("Ранее запланировано", count: overdue.count)
-                                ForEach(overdue, id: \.occurrenceID) { taskRow($0) }
-                            }
-                            let current = open.filter { task in !overdue.contains { $0.occurrenceID == task.occurrenceID } }
-                            if !current.isEmpty {
-                                ForEach(workspace.projects) { project in
-                                    let group = current.filter { $0.projectID == project.id }
-                                    if !group.isEmpty {
-                                        sectionLabel(project.title, count: group.count)
-                                        ForEach(group, id: \.occurrenceID) { taskRow($0) }
-                                    }
+                        if let result {
+                            if result.matches.isEmpty {
+                                emptyState
+                            } else {
+                                ForEach(result.groups) { group in
+                                    sectionLabel(group.title, count: group.matchCount)
+                                    ForEach(group.roots, id: \.occurrenceID) { taskRow($0, result: result) }
                                 }
-                                let unassigned = current.filter { $0.projectID == nil }
-                                if !unassigned.isEmpty {
-                                    sectionLabel("Без проекта", count: unassigned.count)
-                                    ForEach(unassigned, id: \.occurrenceID) { taskRow($0) }
-                                }
-                            }
-                            if !skipped.isEmpty {
-                                sectionLabel("Пропущено", count: skipped.count).padding(.top, 16)
-                                ForEach(skipped, id: \.occurrenceID) { taskRow($0) }
-                            }
-                            if !completed.isEmpty {
-                                sectionLabel(editor.period == .today ? "Выполнено сегодня" : "Выполнено", count: completed.count)
-                                    .padding(.top, 16)
-                                ForEach(completed, id: \.occurrenceID) { taskRow($0) }
                             }
                         }
                     }
@@ -303,9 +314,9 @@ struct WorkspaceView: View {
     private var emptyState: some View {
         VStack(spacing: 12) {
             Image(systemName: "checklist").font(.system(size: 34, weight: .light)).foregroundStyle(Palette.accent)
-            Text(editor.workspace?.tasks.isEmpty == true ? "Задач пока нет" : "Нет задач за этот период")
+            Text(editor.listResult?.emptyReason == .emptyDatabase ? "Задач пока нет" : editor.listResult?.emptyReason == .noMatches ? "Нет совпадений с фильтрами" : "Нет задач за этот период")
                 .font(.system(size: 18, weight: .medium))
-            Text("Добавьте дело, которым хотите заняться.")
+            Text(editor.listResult?.emptyReason == .noMatches ? "Измените проект или выбранные метки." : editor.listResult?.emptyReason == .emptyPeriod ? "Выберите другой период или добавьте задачу." : "Добавьте дело, которым хотите заняться.")
                 .font(.system(size: 13)).foregroundStyle(.secondary)
             Button("Создать задачу", action: editor.openCreation)
                 .buttonStyle(.borderedProminent).padding(.top, 4)
@@ -321,26 +332,44 @@ struct WorkspaceView: View {
         .font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 5)
     }
 
-    private func taskRow(_ task: TaskRecord) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+    private func periodButton(_ period: TaskPeriod) -> some View {
+        Button { editor.selectPeriod(period) } label: {
+            Text(period.label).font(.system(size: 12))
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .background(editor.period == period ? Palette.accent.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 7))
+        }.buttonStyle(.plain).accessibilityAddTraits(editor.period == period ? .isSelected : [])
+    }
+
+    private func taskRow(_ task: TaskRecord, result: TaskListResult) -> some View {
+        let children = result.children(of: task.occurrenceID)
+        let isContext = result.contextParentIDs.contains(task.occurrenceID)
+        return VStack(alignment: .leading, spacing: 6) {
             HStack {
-                let children = editor.workspace?.children(of: task.occurrenceID) ?? []
-                if !children.isEmpty {
+                if !children.isEmpty && !isContext {
                     Button {
                         if !editor.expandedParents.insert(task.occurrenceID).inserted { editor.expandedParents.remove(task.occurrenceID) }
                     } label: {
                         Label("\(children.count)", systemImage: editor.expandedParents.contains(task.occurrenceID) ? "chevron.down" : "chevron.right")
                     }.buttonStyle(.plain).accessibilityLabel("Подзадачи: \(children.count)")
                 }
-                plainTaskRow(task)
+                if isContext {
+                    Button { editor.selectTask(task) } label: {
+                        HStack {
+                            Image(systemName: task.completedAt == nil ? "list.bullet.indent" : "checkmark.circle.fill")
+                            Text(task.title)
+                            Text("Контекст").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }.buttonStyle(.plain).padding(.vertical, 8)
+                } else {
+                    plainTaskRow(task)
+                }
             }
-            let children = editor.workspace?.children(of: task.occurrenceID) ?? []
             if task.completedAt != nil && children.contains(where: { $0.completedAt == nil }) {
                 Text("Родитель выполнен · \(children.filter { $0.completedAt == nil }.count) подзадач открыто")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if editor.expandedParents.contains(task.occurrenceID) {
-                ForEach(children.filter { editor.matchesContext($0) && editor.matchesPeriod($0) }, id: \.occurrenceID) { child in plainTaskRow(child).padding(.leading, 28) }
+            if editor.expandedParents.contains(task.occurrenceID) || isContext {
+                ForEach(children, id: \.occurrenceID) { child in plainTaskRow(child).padding(.leading, 28) }
             }
         }
     }
@@ -375,7 +404,7 @@ struct WorkspaceView: View {
                 .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }
             .buttonStyle(.plain).help(task.title)
-            .accessibilityIdentifier("select-\(task.id)")
+            .accessibilityIdentifier("select-\(task.occurrenceID)")
 
             Text(occurrenceDayLabel(task, today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow))
                 .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -968,4 +997,102 @@ private func historyDate(_ date: Date, zone: String) -> String {
     formatter.timeZone = TimeZone(identifier: zone)
     formatter.dateFormat = "dd.MM.yyyy HH:mm:ss"
     return formatter.string(from: date)
+}
+
+private struct MorePeriods: View {
+    let selected: TaskPeriod
+    let select: (TaskPeriod) -> Void
+    @State private var expanded = false
+    @State private var keyboardSelection: TaskPeriod = .week
+
+    var body: some View {
+        Button { expanded = true } label: {
+            Text(selected == .week || selected == .month ? "Ещё · " + selected.label : "Ещё")
+                .font(.system(size: 12)).padding(.horizontal, 10).padding(.vertical, 7)
+                .background(selected == .week || selected == .month ? Palette.accent.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("more-periods")
+        .accessibilityAddTraits(selected == .week || selected == .month ? .isSelected : [])
+        .onKeyPress(.downArrow) { expanded = true; return .handled }
+        .onHover { inside in if inside { expanded = true } }
+        .popover(isPresented: $expanded, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach([TaskPeriod.week, .month], id: \.self) { period in
+                    Button {
+                        select(period)
+                        expanded = false
+                    } label: {
+                        HStack {
+                            Text(period.label)
+                            Spacer()
+                            if selected == period { Image(systemName: "checkmark") }
+                        }
+                        .frame(width: 170, alignment: .leading)
+                        .padding(5)
+                        .background(keyboardSelection == period ? Palette.accent.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                    }
+                }
+            }
+            .padding(12)
+            .onAppear { keyboardSelection = selected == .month ? .month : .week }
+            .background(PeriodMenuKeyboardFocus(
+                move: { keyboardSelection = $0 > 0 ? .month : .week },
+                apply: {
+                    select(keyboardSelection)
+                    expanded = false
+                },
+                dismiss: { expanded = false }
+            ))
+        }
+    }
+}
+
+/// Owns the popover's responder while it is visible, independent of macOS's button-navigation preference.
+/// This view receives its own key events; it installs no window or application event monitor.
+private struct PeriodMenuKeyboardFocus: NSViewRepresentable {
+    let move: (Int) -> Void
+    let apply: () -> Void
+    let dismiss: () -> Void
+
+    func makeNSView(context: Context) -> PeriodMenuKeyboardView { PeriodMenuKeyboardView() }
+
+    func updateNSView(_ view: PeriodMenuKeyboardView, context: Context) {
+        view.move = move
+        view.apply = apply
+        view.dismiss = dismiss
+    }
+}
+
+private final class PeriodMenuKeyboardView: NSView {
+    var move: ((Int) -> Void)?
+    var apply: (() -> Void)?
+    var dismiss: (() -> Void)?
+    override var acceptsFirstResponder: Bool { true }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // SwiftUI attaches the popover before finishing its responder setup.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window else { return }
+            window.makeKey()
+            window.makeFirstResponder(self)
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func keyDown(with event: NSEvent) {
+        guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty else {
+            super.keyDown(with: event)
+            return
+        }
+        switch event.keyCode {
+        case 125: move?(1)
+        case 126: move?(-1)
+        case 36, 76: apply?()
+        case 53: dismiss?()
+        default: super.keyDown(with: event)
+        }
+    }
 }

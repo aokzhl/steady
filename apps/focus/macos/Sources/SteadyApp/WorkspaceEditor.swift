@@ -2,10 +2,6 @@ import AppKit
 import Observation
 import SteadyCore
 
-enum TaskPeriod: Hashable {
-    case all, today, tomorrow, week, history
-}
-
 /// Window editing state outlives its panels, including unsaved input after a disk error.
 @MainActor
 @Observable
@@ -25,7 +21,37 @@ final class WorkspaceEditor {
     private var projectError: String?
     private var noteError: String?
     private var dayError: String?
-    var period: TaskPeriod = .today
+    private var restoringNavigation = false
+    var navigation = WorkspacePreferences() { didSet { if !restoringNavigation { _ = saveNavigation() } } }
+    var context: TaskListContext {
+        get { navigation.context }
+        set { navigation.context = newValue }
+    }
+    var period: TaskPeriod {
+        get { context.period }
+        set { context.period = newValue }
+    }
+    var sidebarVisible: Bool {
+        get { navigation.sidebarVisible }
+        set { navigation.sidebarVisible = newValue }
+    }
+    var screen: WorkspaceScreen {
+        get { navigation.screen }
+        set { navigation.screen = newValue }
+    }
+    var listResult: TaskListResult? { workspace?.taskList(in: context) }
+    var contextTitle: String {
+        let project = workspace?.projects.first { $0.id == selectedProjectID }?.title
+        let labels = workspace?.labels.filter { context.labelIDs.contains($0.id) }.map(\.title) ?? []
+        let names = [project].compactMap { $0 } + labels
+        return ((names.isEmpty ? ["Все задачи"] : names) + [period.label]).joined(separator: " · ")
+    }
+    @discardableResult
+    func saveNavigation() -> Bool {
+        guard let workspace else { return true }
+        do { try workspace.savePreferences(navigation); return true }
+        catch { actionError = error.localizedDescription; return false }
+    }
     var draftDay: String?
     var draftDayWasChosen = false
     var draftRecurrence: TaskRecurrence?
@@ -36,18 +62,21 @@ final class WorkspaceEditor {
 
     var contextDay: String? {
         switch period {
-        case .all, .week, .history: nil
+        case .all, .week, .month, .completed: nil
         case .today: workspace?.today
         case .tomorrow: workspace?.tomorrow
         }
     }
     private var labelsError: String?
-    var selectedLabelID: UUID?
+    var selectedLabelID: UUID? { context.labelIDs.count == 1 ? context.labelIDs.first : nil }
     var draftLabelIDs: Set<UUID> = []
     var draftLabelsWereChosen = false
     private var draftLabelsNeedReplacement = false
     var detailLabelIDs: Set<UUID> = []
-    var selectedProjectID: UUID?
+    var selectedProjectID: UUID? {
+        get { context.projectID }
+        set { context.projectID = newValue }
+    }
     var draftProjectID: UUID?
     var draftProjectWasChosen = false
     var detailProjectID: UUID?
@@ -61,14 +90,23 @@ final class WorkspaceEditor {
     var draftChildLabelsNeedReplacement: Set<UUID> = []
     var draftChildren: [SubtaskDraft] = []
     var newChildTitle = ""
-    var expandedParents: Set<UUID> = []
+    var expandedParents: Set<UUID> {
+        get { navigation.expandedParentIDs }
+        set { navigation.expandedParentIDs = newValue }
+    }
     var draftTitle = ""
     var draftPriority: TaskPriority = .none
     var detailTitle = ""
     var detailPriority: TaskPriority = .none
     var isCreating = false
-    var detailsVisible = false
-    var selectedID: UUID?
+    var detailsVisible: Bool {
+        get { navigation.detailsVisible }
+        set { navigation.detailsVisible = newValue }
+    }
+    var selectedID: UUID? {
+        get { navigation.selectedOccurrenceID }
+        set { navigation.selectedOccurrenceID = newValue }
+    }
 
     var selectedTask: TaskRecord? {
         workspace?.tasks.first { $0.occurrenceID == selectedID }
@@ -84,6 +122,11 @@ final class WorkspaceEditor {
             }
             let opened = try TaskWorkspace(databaseURL: TaskWorkspace.guestDatabaseURL(in: base))
             workspace = opened
+            restoringNavigation = true
+            navigation = opened.preferences
+            try opened.prepareTaskList(in: context)
+            if navigation.detailsVisible, let task = selectedTask { showDetails(for: task) }
+            restoringNavigation = false
             timerUpdates = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.updateTimer() }
             }
@@ -100,12 +143,13 @@ final class WorkspaceEditor {
             draftRecurrence = opened.creationDraft?.recurrence
             draftSeriesStart = opened.creationDraft?.seriesStart
             openingError = nil
-        } catch { openingError = error.localizedDescription }
+        } catch { restoringNavigation = false; workspace = nil; openingError = error.localizedDescription }
     }
 
     func reload() {
         do {
             try workspace?.reload()
+            try workspace?.prepareTaskList(in: context)
             actionError = nil
         } catch { actionError = error.localizedDescription }
     }
@@ -114,7 +158,7 @@ final class WorkspaceEditor {
         guard saveDetails() else { return }
         guard let workspace, saveDraft() else { isCreating = true; return }
         do {
-            let prepared = try workspace.prepareCreationDraft(projectID: selectedProjectID, plannedDay: contextDay, labelIDs: selectedLabelID.map { [$0] } ?? [])
+            let prepared = try workspace.prepareCreationDraft(projectID: selectedProjectID, plannedDay: contextDay, labelIDs: context.labelIDs)
             draftProjectID = prepared.projectID
             draftDay = prepared.plannedDay
             draftLabelIDs = prepared.labelIDs
@@ -285,21 +329,17 @@ final class WorkspaceEditor {
         guard saveDetails() else { return }
         if isCreating { closeCreation() }
         selectedProjectID = id
-        selectedLabelID = nil
+        if id == nil { context.labelIDs = []; context.labelMatch = .any }
+        screen = .tasks
         detailsVisible = false
     }
 
     func selectLabel(_ id: UUID) {
         guard saveDetails() else { return }
         if isCreating { closeCreation() }
-        selectedLabelID = id
-        selectedProjectID = nil
+        if !context.labelIDs.insert(id).inserted { context.labelIDs.remove(id) }
+        screen = .tasks
         detailsVisible = false
-    }
-
-    func matchesContext(_ task: TaskRecord) -> Bool {
-        (selectedProjectID == nil || task.projectID == selectedProjectID)
-            && (selectedLabelID.map { task.labelIDs.contains($0) } ?? true)
     }
 
     func changeDraftLabels(_ ids: Set<UUID>) {
@@ -331,7 +371,7 @@ final class WorkspaceEditor {
         guard saveDetails(), saveDraft() else { return }
         do {
             try workspace?.deleteLabel(id: label.id)
-            if selectedLabelID == label.id { selectedLabelID = nil }
+            context.labelIDs.remove(label.id)
             synchronizeLabelSelection()
             actionError = nil
         } catch { actionError = error.localizedDescription }
@@ -416,8 +456,14 @@ final class WorkspaceEditor {
     func selectPeriod(_ value: TaskPeriod) {
         guard saveDetails() else { return }
         if isCreating { closeCreation() }
-        period = value
-        detailsVisible = false
+        do {
+            var next = context
+            next.period = value
+            try workspace?.prepareTaskList(in: next)
+            actionError = nil
+            context = next
+            detailsVisible = false
+        } catch { actionError = error.localizedDescription }
     }
 
     func cancelTitleEdit() {
@@ -449,18 +495,13 @@ final class WorkspaceEditor {
         } catch { actionError = error.localizedDescription }
     }
 
-    func matchesPeriod(_ task: TaskRecord) -> Bool {
-        guard let workspace else { return false }
-        switch period {
-        case .all: return true
-        case .week: return workspace.currentWeekTasks.contains { $0.occurrenceID == task.occurrenceID }
-        case .history: return (task.periodEnd ?? task.plannedDay).map { $0 < workspace.today } ?? false
-        case .tomorrow: return task.plannedDay == workspace.tomorrow
-        case .today:
-            if task.completedAt != nil { return workspace.completedToday.contains { $0.occurrenceID == task.occurrenceID } }
-            if task.skippedAt != nil, let end = task.periodEnd, let start = task.seriesDay { return start <= workspace.today && workspace.today <= end }
-            return workspace.openToday.contains { $0.occurrenceID == task.occurrenceID }
-        }
+    func openReport() {
+        guard saveDetails() else { return }
+        if isCreating { closeCreation() }
+        context.projectID = nil
+        context.labelIDs = []
+        screen = .report
+        detailsVisible = false
     }
 
     func addChild() {
@@ -492,8 +533,8 @@ final class WorkspaceEditor {
             isCreating = false
         }
         let saved = workspace?.tasks.first { $0.occurrenceID == owner.occurrenceID } ?? owner
-        selectedProjectID = saved.projectID
-        period = .all
+        context = TaskListContext(projectID: saved.projectID, period: .all, showCompleted: saved.completedAt != nil)
+        screen = .tasks
         showDetails(for: saved)
     }
 
@@ -576,10 +617,11 @@ final class WorkspaceEditor {
         while true {
             let draftSaved = saveDraft()
             let detailsSaved = saveDetails()
+            let navigationSaved = saveNavigation()
             var sessionSaved = true
             do { try workspace?.pauseSession() }
             catch { actionError = error.localizedDescription; sessionSaved = false }
-            if draftSaved && detailsSaved && sessionSaved { return true }
+            if draftSaved && detailsSaved && navigationSaved && sessionSaved { return true }
             // No editable input exists when opening the database itself failed.
             if workspace == nil { return true }
             let alert = NSAlert()
