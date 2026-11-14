@@ -13,9 +13,13 @@ final class WorkspaceEditor {
     var draftError: String?
     private var titleError: String?
     private var priorityError: String?
+    private var projectError: String?
+    var selectedProjectID: UUID?
+    var draftProjectID: UUID?
+    var detailProjectID: UUID?
 
     var detailError: String? {
-        let messages = [titleError, priorityError].compactMap { $0 }
+        let messages = [titleError, priorityError, projectError].compactMap { $0 }
         return messages.isEmpty ? nil : messages.joined(separator: "\n")
     }
     var draftTitle = ""
@@ -30,7 +34,7 @@ final class WorkspaceEditor {
         workspace?.tasks.first { $0.occurrenceID == selectedID }
     }
 
-    private var draft: CreationDraft { CreationDraft(title: draftTitle, priority: draftPriority) }
+    private var draft: CreationDraft { CreationDraft(title: draftTitle, priority: draftPriority, projectID: draftProjectID) }
 
     func openWorkspace() {
         guard workspace == nil else { return }
@@ -42,6 +46,7 @@ final class WorkspaceEditor {
             workspace = opened
             draftTitle = opened.creationDraft?.title ?? ""
             draftPriority = opened.creationDraft?.priority ?? .none
+            draftProjectID = opened.creationDraft?.projectID
             openingError = nil
         } catch { openingError = error.localizedDescription }
     }
@@ -55,6 +60,10 @@ final class WorkspaceEditor {
 
     func openCreation() {
         guard saveDetails() else { return }
+        if workspace?.creationDraft == nil && draftTitle.isEmpty && draftPriority == .none && draftProjectID == nil {
+            draftProjectID = selectedProjectID
+            _ = saveDraft()
+        }
         isCreating = true
     }
 
@@ -84,6 +93,7 @@ final class WorkspaceEditor {
             try workspace?.discardCreationDraft()
             draftTitle = ""
             draftPriority = .none
+            draftProjectID = nil
             draftError = nil
         } catch { draftError = error.localizedDescription }
     }
@@ -94,6 +104,7 @@ final class WorkspaceEditor {
             let task = try workspace.createTaskFromDraft()
             draftTitle = ""
             draftPriority = .none
+            draftProjectID = nil
             draftError = nil
             isCreating = false
             showDetails(for: task)
@@ -111,6 +122,8 @@ final class WorkspaceEditor {
         selectedID = task.occurrenceID
         detailTitle = task.title
         detailPriority = task.priority
+        detailProjectID = task.projectID
+        projectError = nil
         titleError = nil
         priorityError = nil
         detailsVisible = true
@@ -156,7 +169,33 @@ final class WorkspaceEditor {
     @discardableResult
     func saveDetails() -> Bool {
         guard saveTitle() else { return false }
-        return savePriority()
+        guard savePriority() else { return false }
+        return saveProject()
+    }
+
+    func selectProject(_ id: UUID?) {
+        guard saveDetails() else { return }
+        if isCreating { closeCreation() }
+        selectedProjectID = id
+        detailsVisible = false
+    }
+
+    func changeProject(_ id: UUID?) {
+        detailProjectID = id
+        _ = saveProject()
+    }
+
+    private func saveProject() -> Bool {
+        guard let task = selectedTask else { return true }
+        guard task.projectID != detailProjectID else { projectError = nil; return true }
+        do {
+            try workspace?.setProject(id: task.id, projectID: detailProjectID)
+            projectError = nil
+            return true
+        } catch {
+            projectError = error.localizedDescription
+            return false
+        }
     }
 
     func cancelTitleEdit() {
@@ -167,6 +206,8 @@ final class WorkspaceEditor {
     func discardDetailEdits() {
         detailTitle = selectedTask?.title ?? ""
         detailPriority = selectedTask?.priority ?? .none
+        detailProjectID = selectedTask?.projectID
+        projectError = nil
         titleError = nil
         priorityError = nil
     }

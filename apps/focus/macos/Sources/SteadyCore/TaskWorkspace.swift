@@ -16,6 +16,26 @@ public enum TaskPriority: String, CaseIterable, Sendable {
     }
 }
 
+public enum ProjectColor: String, CaseIterable, Sendable {
+    case purple, blue, green, orange, pink
+
+    public var label: String {
+        switch self {
+        case .purple: "Сиреневый"
+        case .blue: "Синий"
+        case .green: "Зелёный"
+        case .orange: "Оранжевый"
+        case .pink: "Розовый"
+        }
+    }
+}
+
+public struct ProjectRecord: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let title: String
+    public let color: ProjectColor?
+}
+
 public struct TaskRecord: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let occurrenceID: UUID
@@ -24,21 +44,26 @@ public struct TaskRecord: Identifiable, Equatable, Sendable {
     public let timeZoneIdentifier: String
     public let completedAt: Date?
     public let priority: TaskPriority
+    public let projectID: UUID?
 }
 
 public struct CreationDraft: Equatable, Sendable {
     public let title: String
     public let priority: TaskPriority
 
-    public init(title: String = "", priority: TaskPriority = .none) {
+    public let projectID: UUID?
+
+    public init(title: String = "", priority: TaskPriority = .none, projectID: UUID? = nil) {
         self.title = title
         self.priority = priority
+        self.projectID = projectID
     }
 }
 
 @MainActor
 @Observable
 public final class TaskWorkspace {
+    public private(set) var projects: [ProjectRecord] = []
     public private(set) var tasks: [TaskRecord] = []
     public private(set) var creationDraft: CreationDraft?
     private let database: SQLiteDatabase
@@ -51,31 +76,43 @@ public final class TaskWorkspace {
         self.calendar = calendar
         self.dayContext = DayContext(date: now(), calendar: calendar())
         self.database = try SQLiteDatabase(url: databaseURL)
+        self.projects = try database.projects()
         self.tasks = try database.records()
         self.creationDraft = try database.creationDraft()
     }
 
     @discardableResult
-    public func createTask(title: String, priority: TaskPriority = .none) throws -> TaskRecord {
-        try insertTask(title: title, priority: priority, consuming: nil)
+    public func createProject(title: String, color: ProjectColor? = nil) throws -> ProjectRecord {
+        let project = ProjectRecord(id: UUID(), title: try validatedTitle(title), color: color)
+        projects = try database.insertProject(project, createdAt: now())
+        return project
+    }
+
+    public func renameProject(id: UUID, title: String) throws {
+        projects = try database.renameProject(id: id, title: validatedTitle(title))
+    }
+
+    @discardableResult
+    public func createTask(title: String, priority: TaskPriority = .none, projectID: UUID? = nil) throws -> TaskRecord {
+        try insertTask(title: title, priority: priority, projectID: projectID, consuming: nil)
     }
 
     @discardableResult
     public func createTaskFromDraft() throws -> TaskRecord {
         guard let draft = creationDraft else { throw WorkspaceError.emptyTitle }
-        let task = try insertTask(title: draft.title, priority: draft.priority, consuming: draft)
+        let task = try insertTask(title: draft.title, priority: draft.priority, projectID: draft.projectID, consuming: draft)
         creationDraft = nil
         return task
     }
 
-    private func insertTask(title: String, priority: TaskPriority, consuming draft: CreationDraft?) throws -> TaskRecord {
+    private func insertTask(title: String, priority: TaskPriority, projectID: UUID?, consuming draft: CreationDraft?) throws -> TaskRecord {
         let title = try validatedTitle(title)
         let createdAt = now()
         let context = DayContext(date: createdAt, calendar: calendar())
         let task = TaskRecord(
             id: UUID(), occurrenceID: UUID(), title: title,
             plannedDay: context.day,
-            timeZoneIdentifier: context.timeZone.identifier, completedAt: nil, priority: priority
+            timeZoneIdentifier: context.timeZone.identifier, completedAt: nil, priority: priority, projectID: projectID
         )
         tasks = try database.insert(task, createdAt: createdAt, consuming: draft)
         dayContext = context
@@ -104,9 +141,21 @@ public final class TaskWorkspace {
         tasks = try database.setPriority(id: id, priority: priority)
     }
 
+    public func setProject(id: UUID, projectID: UUID?) throws {
+        tasks = try database.setProject(id: id, projectID: projectID)
+    }
+
+    public func tasks(in projectID: UUID?) -> [TaskRecord] {
+        tasks.filter { $0.projectID == projectID }
+    }
+
+    public func openTaskCount(in projectID: UUID?) -> Int {
+        tasks(in: projectID).filter { $0.completedAt == nil }.count
+    }
+
     public func saveCreationDraft(_ draft: CreationDraft) throws {
         try database.saveCreationDraft(draft)
-        creationDraft = draft.title.isEmpty && draft.priority == .none ? nil : draft
+        creationDraft = draft.title.isEmpty && draft.priority == .none && draft.projectID == nil ? nil : draft
     }
 
     public func discardCreationDraft() throws {
@@ -128,6 +177,7 @@ public final class TaskWorkspace {
     public func reload() throws {
         dayContext = DayContext(date: now(), calendar: calendar())
         tasks = try database.records()
+        projects = try database.projects()
         creationDraft = try database.creationDraft()
     }
 
