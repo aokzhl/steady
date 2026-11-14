@@ -558,9 +558,11 @@ private struct SessionBar: View {
                 }
                 Spacer()
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    Text(durationLabel(editor.workspace?.elapsedSeconds ?? 0))
+                    let elapsed = durationLabel(editor.workspace?.elapsedSeconds ?? 0)
+                    Text(elapsed)
                         .font(.system(size: 24, weight: .medium, design: .monospaced))
                         .accessibilityLabel("Прошло активного времени")
+                        .accessibilityValue(elapsed)
                         .accessibilityIdentifier("session-elapsed")
                 }
                 Button(session.isPaused ? "Продолжить" : "Пауза", action: editor.toggleSessionPause)
