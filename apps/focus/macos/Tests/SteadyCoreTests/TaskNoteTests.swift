@@ -136,4 +136,54 @@ struct TaskNoteTests {
         #expect(reopened.creationDraft?.note == updated)
     }
 
+    @Test
+    func versionThreeProjectAssignmentAndExplicitDraftChoiceSurviveNoteMigration() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("steady.sqlite")
+        let fixture = Process()
+        fixture.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        fixture.arguments = [url.path, """
+            CREATE TABLE projects (id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, color TEXT, created_at REAL NOT NULL);
+            CREATE TABLE tasks (id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, created_at REAL NOT NULL, priority TEXT NOT NULL DEFAULT 'none', project_id TEXT REFERENCES projects(id));
+            CREATE TABLE task_occurrences (id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id), planned_day TEXT NOT NULL, time_zone TEXT NOT NULL, completed_at REAL);
+            CREATE TABLE creation_draft (id INTEGER PRIMARY KEY CHECK(id = 1), title TEXT NOT NULL, priority TEXT NOT NULL, project_id TEXT REFERENCES projects(id), project_was_chosen INTEGER NOT NULL DEFAULT 0 CHECK(project_was_chosen IN (0, 1)));
+            INSERT INTO projects VALUES ('33333333-3333-3333-3333-333333333333', 'Project', 'green', 1800000000);
+            INSERT INTO tasks VALUES ('11111111-1111-1111-1111-111111111111', 'Assigned', 1800000000, 'high', '33333333-3333-3333-3333-333333333333');
+            INSERT INTO task_occurrences VALUES ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', '2026-11-12', 'Asia/Almaty', 1800000001.125);
+            INSERT INTO creation_draft VALUES (1, '', 'none', NULL, 1);
+            PRAGMA user_version = 3;
+            """]
+        try fixture.run()
+        fixture.waitUntilExit()
+        try #require(fixture.terminationStatus == 0)
+        let workspace = try TaskWorkspace(databaseURL: url)
+        let project = try #require(workspace.projects.first)
+        let task = try #require(workspace.tasks.first)
+        #expect(project.title == "Project")
+        #expect(project.color == .green)
+        #expect(task.projectID == project.id)
+        #expect(task.note == .empty)
+        #expect(task.completedAt == Date(timeIntervalSince1970: 1_800_000_001.125))
+        #expect(workspace.creationDraft == CreationDraft(projectWasChosen: true))
+        let note = TaskNote(rtf: Data("project instructions".utf8), plainText: "Project instructions")
+        try workspace.setNote(id: task.id, note: note)
+        try workspace.saveCreationDraft(CreationDraft(title: "New task", projectWasChosen: true, note: note))
+        let continued = try TaskWorkspace(databaseURL: url)
+        #expect(continued.tasks.first?.projectID == project.id)
+        #expect(continued.tasks.first?.note == note)
+        #expect(continued.creationDraft?.projectID == nil)
+        #expect(continued.creationDraft?.projectWasChosen == true)
+        let created = try continued.createTaskFromDraft()
+        #expect(created.note == note)
+        #expect(created.projectID == nil)
+        try continued.setProject(id: created.id, projectID: project.id)
+        let reopened = try TaskWorkspace(databaseURL: url)
+        #expect(reopened.tasks.last?.projectID == project.id)
+        #expect(reopened.tasks.last?.note == note)
+        #expect(reopened.projects == [project])
+        #expect(reopened.creationDraft == nil)
+    }
+
 }
