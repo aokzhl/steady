@@ -214,13 +214,21 @@ final class NoteTextView: NSTextView {
                 alert.informativeText = "Проверьте адрес: нужен полный https:// или http:// адрес."
                 continue
             }
-            let label = range.length > 0 ? (string as NSString).substring(with: range) : input
-            var attributes = typingAttributes
-            attributes[.link] = url
-            insertText(NSAttributedString(string: label, attributes: attributes), replacementRange: range)
-            typingAttributes.removeValue(forKey: .link)
+            applyLink(url, to: range)
             return
         }
+    }
+
+    func applyLink(_ url: URL, to range: NSRange) {
+        let replacement: NSMutableAttributedString
+        if range.length > 0, let textStorage {
+            replacement = NSMutableAttributedString(attributedString: textStorage.attributedSubstring(from: range))
+        } else {
+            replacement = NSMutableAttributedString(string: url.absoluteString, attributes: typingAttributes)
+        }
+        replacement.addAttribute(.link, value: url, range: NSRange(location: 0, length: replacement.length))
+        insertText(replacement, replacementRange: range)
+        typingAttributes.removeValue(forKey: .link)
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
