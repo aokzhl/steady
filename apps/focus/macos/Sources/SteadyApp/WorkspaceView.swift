@@ -14,6 +14,7 @@ struct WorkspaceView: View {
     @State private var sidebarVisible = true
     @State private var projectEditorVisible = false
     @State private var editingProject: ProjectRecord?
+    @State private var historyVisible = false
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openWindow) private var openWindow
 
@@ -42,6 +43,10 @@ struct WorkspaceView: View {
                     }
                 }
             }
+            if let workspace = editor.workspace, let session = workspace.activeSession {
+                Divider()
+                SessionBar(editor: editor, session: session)
+            }
         }
         .frame(minWidth: 850, minHeight: 560)
         .background(Palette.background)
@@ -68,6 +73,20 @@ struct WorkspaceView: View {
             .accessibilityLabel("Боковая панель")
             Text("Steady").font(.system(size: 14, weight: .semibold))
             Spacer()
+            if editor.workspace != nil {
+                ToolMenu(editor: editor, task: nil)
+                Button { historyVisible.toggle() } label: {
+                    Label("История", systemImage: "clock.arrow.circlepath")
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $historyVisible) {
+                    ScrollView {
+                        RunHistory(results: editor.workspace?.timeToolResults ?? [])
+                            .padding(20)
+                    }
+                    .frame(width: 360, height: 400)
+                }
+            }
             Label("Гость · локально", systemImage: "person.crop.circle")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
@@ -249,6 +268,7 @@ struct WorkspaceView: View {
             .accessibilityLabel("\(task.completedAt == nil ? "Выполнить" : "Отменить выполнение"): \(task.title)")
             .accessibilityIdentifier("complete-\(task.occurrenceID)")
 
+            ToolMenu(editor: editor, task: task, compact: true)
             Button { editor.selectTask(task) } label: {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(task.title)
@@ -399,6 +419,7 @@ private struct DetailPanel: View {
                 ), accessibilityID: "detail-note")
                 .frame(height: 220)
             }
+            ToolMenu(editor: editor, task: task)
             if let error = editor.detailError {
                 StorageNotice(message: error)
                 Button("Повторить сохранение") { editor.saveDetails() }
@@ -406,7 +427,10 @@ private struct DetailPanel: View {
             }
             Label(task.completedAt == nil ? "Не выполнено" : "Выполнено", systemImage: task.completedAt == nil ? "circle" : "checkmark.circle")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
-            Spacer()
+            ScrollView {
+                RunHistory(results: editor.workspace?.timeToolResults.filter { $0.occurrenceID == task.occurrenceID } ?? [])
+            }
+            Spacer(minLength: 0)
         }
         .padding(22)
         .onExitCommand { editor.closeDetails() }
@@ -488,4 +512,112 @@ private struct StorageNotice: View {
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("storage-error")
     }
+}
+
+private struct ToolMenu: View {
+    @Bindable var editor: WorkspaceEditor
+    let task: TaskRecord?
+    var compact = false
+
+    var body: some View {
+        Menu {
+            Button("Таймер · Не задано") {}.disabled(true)
+            Button("Помодоро · Не задано") {}.disabled(true)
+            Button("Секундомер · Счёт вверх") { editor.startStopwatch(task) }
+                .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil)
+            if editor.workspace?.activeSession != nil {
+                Divider()
+                Text("Сначала остановите текущую сессию (в том числе на паузе)")
+            } else if task?.completedAt != nil {
+                Text("Верните задачу в невыполненные для нового запуска")
+            }
+        } label: {
+            if compact { Image(systemName: "stopwatch") }
+            else { Label(task == nil ? "Без задачи" : "Инструменты", systemImage: "stopwatch") }
+        }
+        .accessibilityLabel(task.map { "Инструменты: " + $0.title } ?? "Инструменты без задачи")
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Выбрать инструмент времени" + (task == nil ? " без задачи" : ""))
+        .accessibilityIdentifier(task.map { "task-tools-\($0.id)" } ?? "free-tools")
+    }
+}
+
+private struct SessionBar: View {
+    @Bindable var editor: WorkspaceEditor
+    let session: TimeToolSession
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 16) {
+                Image(systemName: "stopwatch").foregroundStyle(Palette.accent)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Секундомер" + (session.isPaused ? " · Пауза" : " · Работа"))
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(session.ownerTitle).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                }
+                Spacer()
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    Text(durationLabel(editor.workspace?.elapsedSeconds ?? 0))
+                        .font(.system(size: 24, weight: .medium, design: .monospaced))
+                        .accessibilityLabel("Прошло активного времени")
+                        .accessibilityIdentifier("session-elapsed")
+                }
+                Button(session.isPaused ? "Продолжить" : "Пауза", action: editor.toggleSessionPause)
+                    .accessibilityIdentifier("session-pause")
+                Button("Стоп", action: editor.stopSession)
+                    .accessibilityIdentifier("session-stop")
+            }
+            if editor.workspace?.sessionNeedsSave == true {
+                Text("Сессия на паузе: не удалось сохранить работу на Mac.")
+                    .font(.system(size: 12)).foregroundStyle(.orange)
+                Button("Повторить сохранение", action: editor.retrySessionSave)
+            }
+        }
+        .padding(.horizontal, 26).padding(.vertical, 16)
+        .background(Palette.surface)
+    }
+}
+
+private struct RunHistory: View {
+    let results: [TimeToolSession]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("История запусков").font(.system(size: 13, weight: .semibold))
+            if results.isEmpty {
+                Text("Сохранённых запусков пока нет")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+            ForEach(results.reversed()) { result in
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Label("Секундомер", systemImage: "stopwatch")
+                        Spacer()
+                        Text(durationLabel(result.durationSeconds)).monospacedDigit()
+                    }
+                    Text(result.ownerTitle)
+                    Text(historyDate(result.startedAt, zone: result.timeZoneIdentifier) + " — " + historyDate(result.stoppedAt ?? result.startedAt, zone: result.timeZoneIdentifier))
+                        .foregroundStyle(.secondary)
+                    Text(result.timeZoneIdentifier).foregroundStyle(.tertiary)
+                }
+                .font(.system(size: 11))
+                Divider()
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private func durationLabel(_ seconds: TimeInterval) -> String {
+    let value = Int(max(0, seconds))
+    return String(format: "%02d:%02d:%02d", value / 3600, (value % 3600) / 60, value % 60)
+}
+
+private func historyDate(_ date: Date, zone: String) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "ru_RU")
+    formatter.timeZone = TimeZone(identifier: zone)
+    formatter.dateFormat = "dd.MM.yyyy HH:mm:ss"
+    return formatter.string(from: date)
 }

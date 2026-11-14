@@ -91,7 +91,11 @@ public struct CreationDraft: Equatable, Sendable {
 public final class TaskWorkspace {
     public private(set) var projects: [ProjectRecord] = []
     public private(set) var tasks: [TaskRecord] = []
+    public private(set) var activeSession: TimeToolSession?
+    public private(set) var timeToolResults: [TimeToolSession] = []
     public private(set) var creationDraft: CreationDraft?
+    private var pendingPausedSession: TimeToolSession?
+    public var sessionNeedsSave: Bool { pendingPausedSession != nil }
     private let database: SQLiteDatabase
     private let now: () -> Date
     private let calendar: () -> Calendar
@@ -103,8 +107,11 @@ public final class TaskWorkspace {
         self.dayContext = DayContext(date: now(), calendar: calendar())
         self.database = try SQLiteDatabase(url: databaseURL)
         self.projects = try database.projects()
+        try database.restorePausedSession()
         self.tasks = try database.records()
         self.creationDraft = try database.creationDraft()
+        self.activeSession = try database.activeTimeToolSession()
+        self.timeToolResults = try database.timeToolResults()
     }
 
     @discardableResult
@@ -149,7 +156,9 @@ public final class TaskWorkspace {
 
     public func setCompleted(occurrenceID: UUID, completed: Bool) throws {
         let instant = now()
-        tasks = try database.setCompleted(occurrenceID: occurrenceID, completed: completed, at: instant)
+        try persistSessionCommand {
+            tasks = try database.setCompleted(occurrenceID: occurrenceID, completed: completed, at: instant)
+        }
         dayContext = DayContext(date: instant, calendar: calendar())
     }
 
@@ -255,6 +264,56 @@ public final class TaskWorkspace {
         tasks = try database.records()
         projects = try database.projects()
         creationDraft = try database.creationDraft()
+        try loadTimeTools()
+    }
+
+    /// Reads the injected clock on demand; UI rendering never increments stored time.
+    public var elapsedSeconds: TimeInterval { activeSession?.elapsedSeconds(at: now()) ?? 0 }
+
+    public func startStopwatch(occurrenceID: UUID? = nil) throws {
+        try retrySessionSave()
+        try database.startStopwatch(occurrenceID: occurrenceID, at: now(), timeZone: calendar().timeZone.identifier)
+        try loadTimeTools()
+    }
+
+    public func pauseSession() throws {
+        try persistSessionCommand { try database.changeSession(.pause, at: now()) }
+    }
+
+    public func resumeSession() throws {
+        try persistSessionCommand { try database.changeSession(.resume, at: now()) }
+    }
+
+    public func stopSession() throws {
+        try persistSessionCommand { try database.changeSession(.stop, at: now()) }
+    }
+
+    public func retrySessionSave() throws {
+        if let pendingPausedSession {
+            try database.savePausedSession(pendingPausedSession)
+            self.pendingPausedSession = nil
+        }
+        try loadTimeTools()
+    }
+
+    private func persistSessionCommand(_ command: () throws -> Void) throws {
+        do {
+            try retrySessionSave()
+            try command()
+            try loadTimeTools()
+        } catch {
+            if let failure = error as? WorkspaceError, case .storage = failure, var frozen = activeSession {
+                frozen.closeSegment(at: now())
+                activeSession = frozen
+                pendingPausedSession = frozen
+            }
+            throw error
+        }
+    }
+
+    private func loadTimeTools() throws {
+        if pendingPausedSession == nil { activeSession = try database.activeTimeToolSession() }
+        timeToolResults = try database.timeToolResults()
     }
 
     public static func guestDatabaseURL(in baseDirectory: URL? = nil) throws -> URL {

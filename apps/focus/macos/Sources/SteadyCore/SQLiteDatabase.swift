@@ -3,6 +3,8 @@ import Foundation
 
 public enum WorkspaceError: Error, Equatable, LocalizedError {
     case invalidDay
+    case sessionOccupied
+    case completedOwner
     case emptyTitle
     case invalidTitle
     case projectNotFound
@@ -15,6 +17,10 @@ public enum WorkspaceError: Error, Equatable, LocalizedError {
         switch self {
         case .invalidDay:
             "Выберите существующую календарную дату."
+        case .sessionOccupied:
+            "Уже есть активная сессия, в том числе на паузе. Остановите её перед новым запуском."
+        case .completedOwner:
+            "Задача уже выполнена. Сначала верните её в работу."
         case .emptyTitle:
             "Введите название задачи."
         case .invalidTitle:
@@ -56,12 +62,13 @@ final class SQLiteDatabase {
                 guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
                 return Int(sqlite3_column_int(query, 0))
             }
-            guard version <= 5 else { throw WorkspaceError.unsupportedSchema(version) }
+            guard version <= 6 else { throw WorkspaceError.unsupportedSchema(version) }
             if version == 0 { try migrateToVersionOne() }
             if version < 2 { try migrateToVersionTwo() }
             if version < 3 { try migrateToVersionThree() }
             if version < 4 { try migrateToVersionFour() }
             if version < 5 { try migrateToVersionFive() }
+            if version < 6 { try migrateToVersionSix() }
         } catch {
             sqlite3_close(connection)
             connection = nil
@@ -195,6 +202,11 @@ final class SQLiteDatabase {
                 throw WorkspaceError.occurrenceNotFound
             }
             guard (record.completedAt != nil) != completed else { return current }
+            if completed, var session = try activeTimeToolSession(), session.occurrenceID == occurrenceID {
+                session.closeSegment(at: instant)
+                session.stoppedAt = max(session.startedAt, instant)
+                try saveTimeToolSession(session)
+            }
             let value: Value = completed ? .number(instant.timeIntervalSince1970) : .null
             try execute("UPDATE task_occurrences SET completed_at = ? WHERE id = ?", [value, .text(occurrenceID.uuidString)])
             return try records()
@@ -255,6 +267,163 @@ final class SQLiteDatabase {
             }
             try execute("PRAGMA user_version = 4")
         }
+    }
+
+    private func migrateToVersionSix() throws {
+        try transaction {
+            try execute("""
+                CREATE TABLE time_tool_runs (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    kind TEXT NOT NULL,
+                    task_id TEXT REFERENCES tasks(id),
+                    occurrence_id TEXT REFERENCES task_occurrences(id),
+                    owner_title TEXT NOT NULL,
+                    started_at REAL NOT NULL,
+                    time_zone TEXT NOT NULL,
+                    stopped_at REAL
+                )
+                """)
+            // Paused sessions also own this slot. SQLite enforces the invariant across windows.
+            try execute("CREATE UNIQUE INDEX one_active_time_tool ON time_tool_runs ((1)) WHERE stopped_at IS NULL")
+            try execute("""
+                CREATE TABLE time_tool_segments (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    run_id TEXT NOT NULL REFERENCES time_tool_runs(id),
+                    position INTEGER NOT NULL,
+                    started_at REAL NOT NULL,
+                    ended_at REAL CHECK(ended_at >= started_at),
+                    UNIQUE(run_id, position)
+                )
+                """)
+            try execute("PRAGMA user_version = 6")
+        }
+    }
+
+    func startStopwatch(occurrenceID: UUID?, at instant: Date, timeZone: String) throws {
+        try transaction {
+            guard try activeTimeToolSession() == nil else { throw WorkspaceError.sessionOccupied }
+            var owner: TaskRecord?
+            if let occurrenceID {
+                guard let task = try records().first(where: { $0.occurrenceID == occurrenceID }) else {
+                    throw WorkspaceError.occurrenceNotFound
+                }
+                guard task.completedAt == nil else { throw WorkspaceError.completedOwner }
+                owner = task
+            }
+            let session = TimeToolSession(
+                id: UUID(), kind: .stopwatch, taskID: owner?.id, occurrenceID: owner?.occurrenceID,
+                ownerTitle: owner?.title ?? "Без задачи", startedAt: instant, timeZoneIdentifier: timeZone,
+                stoppedAt: nil, segments: [WorkSegment(id: UUID(), startedAt: instant, endedAt: nil)]
+            )
+            try saveTimeToolSession(session)
+        }
+    }
+
+    /// Until periodic checkpoints are added, only explicit commands are committed boundaries.
+    /// Never charge the open interval (including process absence) after reopening the workspace.
+    func restorePausedSession() throws {
+        try transaction {
+            guard var session = try activeTimeToolSession(), !session.isPaused,
+                  let boundary = session.segments.last?.startedAt else { return }
+            session.closeSegment(at: boundary)
+            try saveTimeToolSession(session)
+        }
+    }
+
+    func savePausedSession(_ session: TimeToolSession) throws {
+        try transaction {
+            guard try activeTimeToolSession()?.id == session.id else { throw WorkspaceError.sessionOccupied }
+            try saveTimeToolSession(session)
+        }
+    }
+
+    enum SessionCommand { case pause, resume, stop }
+
+    func changeSession(_ command: SessionCommand, at instant: Date) throws {
+        try transaction {
+            guard var session = try activeTimeToolSession() else { return }
+            switch command {
+            case .pause: session.closeSegment(at: instant)
+            case .resume:
+                guard session.isPaused else { return }
+                let start = max(instant, session.segments.last?.endedAt ?? session.startedAt)
+                session.segments.append(WorkSegment(id: UUID(), startedAt: start, endedAt: nil))
+            case .stop:
+                session.closeSegment(at: instant)
+                session.stoppedAt = max(instant, session.segments.last?.endedAt ?? session.startedAt)
+            }
+            try saveTimeToolSession(session)
+        }
+    }
+
+    func activeTimeToolSession() throws -> TimeToolSession? {
+        try timeToolSessions(stopped: false).first
+    }
+
+    func timeToolResults() throws -> [TimeToolSession] { try timeToolSessions(stopped: true) }
+
+    private func timeToolSessions(stopped: Bool) throws -> [TimeToolSession] {
+        try statement("""
+            SELECT id, kind, task_id, occurrence_id, owner_title, started_at, time_zone, stopped_at
+            FROM time_tool_runs WHERE stopped_at IS \(stopped ? "NOT NULL" : "NULL") ORDER BY started_at, rowid
+            """) { query in
+            var sessions: [TimeToolSession] = []
+            var result = sqlite3_step(query)
+            while result == SQLITE_ROW {
+                guard let id = UUID(uuidString: text(query, 0)), let kind = TimeToolKind(rawValue: text(query, 1)) else {
+                    throw WorkspaceError.storage("Invalid time tool run")
+                }
+                let segments = try statement("SELECT id, started_at, ended_at FROM time_tool_segments WHERE run_id = ? ORDER BY position", [.text(id.uuidString)]) { segmentQuery in
+                    var segments: [WorkSegment] = []
+                    var segmentResult = sqlite3_step(segmentQuery)
+                    while segmentResult == SQLITE_ROW {
+                        guard let segmentID = UUID(uuidString: text(segmentQuery, 0)) else {
+                            throw WorkspaceError.storage("Invalid segment identifier")
+                        }
+                        segments.append(WorkSegment(id: segmentID, startedAt: date(segmentQuery, 1), endedAt: optionalDate(segmentQuery, 2)))
+                        segmentResult = sqlite3_step(segmentQuery)
+                    }
+                    guard segmentResult == SQLITE_DONE else { throw failure() }
+                    return segments
+                }
+                sessions.append(TimeToolSession(
+                    id: id, kind: kind, taskID: UUID(uuidString: text(query, 2)),
+                    occurrenceID: UUID(uuidString: text(query, 3)), ownerTitle: text(query, 4),
+                    startedAt: date(query, 5), timeZoneIdentifier: text(query, 6),
+                    stoppedAt: optionalDate(query, 7), segments: segments
+                ))
+                result = sqlite3_step(query)
+            }
+            guard result == SQLITE_DONE else { throw failure() }
+            return sessions
+        }
+    }
+
+    private func saveTimeToolSession(_ session: TimeToolSession) throws {
+        try execute("""
+            INSERT INTO time_tool_runs (id, kind, task_id, occurrence_id, owner_title, started_at, time_zone, stopped_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET stopped_at = excluded.stopped_at
+            """, [.text(session.id.uuidString), .text(session.kind.rawValue),
+                  session.taskID.map { .text($0.uuidString) } ?? .null,
+                  session.occurrenceID.map { .text($0.uuidString) } ?? .null,
+                  .text(session.ownerTitle), .number(session.startedAt.timeIntervalSince1970),
+                  .text(session.timeZoneIdentifier), session.stoppedAt.map { .number($0.timeIntervalSince1970) } ?? .null])
+        for (position, segment) in session.segments.enumerated() {
+            try execute("""
+                INSERT INTO time_tool_segments (id, run_id, position, started_at, ended_at) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET ended_at = excluded.ended_at
+                """, [.text(segment.id.uuidString), .text(session.id.uuidString), .number(Double(position)),
+                      .number(segment.startedAt.timeIntervalSince1970), segment.endedAt.map { .number($0.timeIntervalSince1970) } ?? .null])
+        }
+    }
+
+    private func date(_ query: OpaquePointer, _ index: Int32) -> Date {
+        Date(timeIntervalSince1970: sqlite3_column_double(query, index))
+    }
+
+    private func optionalDate(_ query: OpaquePointer, _ index: Int32) -> Date? {
+        sqlite3_column_type(query, index) == SQLITE_NULL ? nil : date(query, index)
     }
 
     private func migrateToVersionTwo() throws {
