@@ -56,6 +56,33 @@ public struct LabelRecord: Identifiable, Equatable, Sendable {
     public let color: ProjectColor?
 }
 
+public enum TaskRecurrence: Equatable, Sendable, Codable {
+    case daily
+    case weekdays
+    /// Calendar weekday numbers: Sunday = 1, Monday = 2, … Saturday = 7.
+    case selectedWeekdays(Set<Int>)
+
+    public var label: String {
+        switch self {
+        case .daily: "Ежедневно"
+        case .weekdays: "По будням"
+        case .selectedWeekdays: "Выбранные дни"
+        }
+    }
+
+    var weekdays: Set<Int> {
+        switch self {
+        case .daily: Set(1...7)
+        case .weekdays: Set(2...6)
+        case .selectedWeekdays(let days): days
+        }
+    }
+
+    func validate() throws {
+        guard !weekdays.isEmpty, weekdays.isSubset(of: Set(1...7)) else { throw WorkspaceError.invalidRecurrence }
+    }
+}
+
 public struct TaskRecord: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let occurrenceID: UUID
@@ -67,6 +94,9 @@ public struct TaskRecord: Identifiable, Equatable, Sendable {
     public let projectID: UUID?
     public let note: TaskNote
     public let labelIDs: Set<UUID>
+    public internal(set) var recurrence: TaskRecurrence? = nil
+    public internal(set) var seriesStart: String? = nil
+    public internal(set) var seriesDay: String? = nil
 }
 
 public struct CreationDraft: Equatable, Sendable {
@@ -79,8 +109,12 @@ public struct CreationDraft: Equatable, Sendable {
     public let dayWasChosen: Bool
     public let note: TaskNote
     public let labelsWereChosen: Bool
+    public let recurrence: TaskRecurrence?
+    public let seriesStart: String?
 
-    public init(title: String = "", priority: TaskPriority = .none, projectID: UUID? = nil, projectWasChosen: Bool = false, plannedDay: String? = nil, dayWasChosen: Bool = false, note: TaskNote = .empty, labelIDs: Set<UUID> = [], labelsWereChosen: Bool = false) {
+    public init(title: String = "", priority: TaskPriority = .none, projectID: UUID? = nil, projectWasChosen: Bool = false, plannedDay: String? = nil, dayWasChosen: Bool = false, note: TaskNote = .empty, labelIDs: Set<UUID> = [], labelsWereChosen: Bool = false, recurrence: TaskRecurrence? = nil, seriesStart: String? = nil) {
+        self.recurrence = recurrence
+        self.seriesStart = seriesStart
         self.title = title
         self.priority = priority
         self.projectID = projectID
@@ -93,7 +127,7 @@ public struct CreationDraft: Equatable, Sendable {
     }
 
     public var isEmpty: Bool {
-        title.isEmpty && priority == .none && projectID == nil && !projectWasChosen && note == .empty && plannedDay == nil && !dayWasChosen && labelIDs.isEmpty && !labelsWereChosen
+        title.isEmpty && priority == .none && projectID == nil && !projectWasChosen && note == .empty && plannedDay == nil && !dayWasChosen && recurrence == nil && seriesStart == nil && labelIDs.isEmpty && !labelsWereChosen
     }
 }
 
@@ -123,7 +157,7 @@ public final class TaskWorkspace {
         self.labels = try database.labels()
         self.projects = try database.projects()
         try database.restorePausedSession()
-        self.tasks = try database.records()
+        self.tasks = try database.refreshOccurrences(today: dayContext.day, timeZone: calendar().timeZone.identifier)
         self.creationDraft = try database.creationDraft()
         self.activeSession = try database.activeTimeToolSession()
         self.timeToolResults = try database.timeToolResults()
@@ -175,31 +209,36 @@ public final class TaskWorkspace {
 
     /// General creation is undated. A concrete day context passes its calendar date explicitly.
     @discardableResult
-    public func createTask(title: String, priority: TaskPriority = .none, projectID: UUID? = nil, plannedDay: String? = nil, note: TaskNote = .empty, labelIDs: Set<UUID> = []) throws -> TaskRecord {
-        try insertTask(title: title, priority: priority, projectID: projectID, plannedDay: plannedDay, note: note, labelIDs: labelIDs, consuming: nil)
+    public func createTask(title: String, priority: TaskPriority = .none, projectID: UUID? = nil, plannedDay: String? = nil, note: TaskNote = .empty, labelIDs: Set<UUID> = [], recurrence: TaskRecurrence? = nil, seriesStart: String? = nil) throws -> TaskRecord {
+        try insertTask(title: title, priority: priority, projectID: projectID, plannedDay: plannedDay, note: note, labelIDs: labelIDs, recurrence: recurrence, seriesStart: seriesStart, consuming: nil)
     }
 
     @discardableResult
     public func createTaskFromDraft() throws -> TaskRecord {
         guard let draft = creationDraft else { throw WorkspaceError.emptyTitle }
-        let task = try insertTask(title: draft.title, priority: draft.priority, projectID: draft.projectID, plannedDay: draft.plannedDay, note: draft.note, labelIDs: draft.labelIDs, consuming: draft)
+        let task = try insertTask(title: draft.title, priority: draft.priority, projectID: draft.projectID, plannedDay: draft.plannedDay, note: draft.note, labelIDs: draft.labelIDs, recurrence: draft.recurrence, seriesStart: draft.seriesStart, consuming: draft)
         creationDraft = nil
         return task
     }
 
-    private func insertTask(title: String, priority: TaskPriority, projectID: UUID?, plannedDay: String?, note: TaskNote, labelIDs: Set<UUID>, consuming draft: CreationDraft?) throws -> TaskRecord {
+    private func insertTask(title: String, priority: TaskPriority, projectID: UUID?, plannedDay: String?, note: TaskNote, labelIDs: Set<UUID>, recurrence: TaskRecurrence?, seriesStart: String?, consuming draft: CreationDraft?) throws -> TaskRecord {
         let title = try validatedTitle(title)
         try validateDay(plannedDay)
+        try validateDay(seriesStart)
+        try recurrence?.validate()
         let createdAt = now()
         let context = DayContext(date: createdAt, calendar: calendar())
-        let task = TaskRecord(
+        var task = TaskRecord(
             id: UUID(), occurrenceID: UUID(), title: title,
             plannedDay: plannedDay,
             timeZoneIdentifier: context.timeZone.identifier, completedAt: nil, priority: priority, projectID: projectID, note: note, labelIDs: labelIDs
         )
-        tasks = try database.insert(task, createdAt: createdAt, consuming: draft)
+        task.recurrence = recurrence
+        task.seriesStart = recurrence == nil ? nil : (seriesStart ?? context.day)
+        tasks = try database.insert(task, createdAt: createdAt, consuming: draft, today: context.day)
+
         dayContext = context
-        return task
+        return tasks.first { $0.id == task.id && ($0.plannedDay ?? "") >= context.day } ?? tasks.first { $0.id == task.id } ?? task
     }
 
     public func setCompleted(occurrenceID: UUID, completed: Bool) throws {
@@ -239,7 +278,7 @@ public final class TaskWorkspace {
     }
 
     public func openTaskCount(in projectID: UUID?) -> Int {
-        tasks(in: projectID).filter { $0.completedAt == nil }.count
+        visibleTasks.filter { $0.projectID == projectID }.filter { $0.completedAt == nil }.count
     }
 
     public func setNote(id: UUID, note: TaskNote) throws {
@@ -251,14 +290,14 @@ public final class TaskWorkspace {
     public func prepareCreationDraft(projectID: UUID? = nil, plannedDay: String? = nil, labelIDs: Set<UUID> = []) throws -> CreationDraft {
         let saved = creationDraft ?? CreationDraft()
         let hasSavedInput = !saved.title.isEmpty || saved.priority != .none || saved.projectID != nil
-            || saved.projectWasChosen || saved.note != .empty || saved.dayWasChosen || !saved.labelIDs.isEmpty || saved.labelsWereChosen
+            || saved.projectWasChosen || saved.note != .empty || saved.dayWasChosen || saved.recurrence != nil || !saved.labelIDs.isEmpty || saved.labelsWereChosen
         let prepared = CreationDraft(
             title: saved.title, priority: saved.priority,
             projectID: creationDraft != nil ? saved.projectID : projectID,
             projectWasChosen: saved.projectWasChosen,
             plannedDay: hasSavedInput ? saved.plannedDay : plannedDay,
             dayWasChosen: saved.dayWasChosen, note: saved.note,
-            labelIDs: creationDraft != nil ? saved.labelIDs : labelIDs, labelsWereChosen: saved.labelsWereChosen
+            labelIDs: creationDraft != nil ? saved.labelIDs : labelIDs, labelsWereChosen: saved.labelsWereChosen, recurrence: saved.recurrence, seriesStart: saved.seriesStart
         )
         try saveCreationDraft(prepared)
         return prepared
@@ -267,6 +306,8 @@ public final class TaskWorkspace {
     /// Set `replacingLabels` for an explicit picker choice, including an empty selection.
     public func saveCreationDraft(_ draft: CreationDraft, replacingLabels: Bool = false) throws {
         try validateDay(draft.plannedDay)
+        try validateDay(draft.seriesStart)
+        try draft.recurrence?.validate()
         try database.saveCreationDraft(draft, replacingLabels: replacingLabels)
         creationDraft = draft.isEmpty ? nil : draft
     }
@@ -304,7 +345,7 @@ public final class TaskWorkspace {
 
     public var openToday: [TaskRecord] {
         let day = today
-        return tasks.filter { $0.completedAt == nil && $0.plannedDay.map { $0 <= day } == true }
+        return tasks.filter { task in task.completedAt == nil && task.plannedDay.map { task.seriesStart == nil ? $0 <= day : $0 == day } == true }
     }
 
     public var completedToday: [TaskRecord] {
@@ -315,7 +356,7 @@ public final class TaskWorkspace {
 
     public func reload() throws {
         dayContext = DayContext(date: now(), calendar: calendar())
-        tasks = try database.records()
+        tasks = try database.refreshOccurrences(today: dayContext.day, timeZone: calendar().timeZone.identifier)
         projects = try database.projects()
         labels = try database.labels()
         lastDeletedLabel = try database.lastDeletedLabel()
@@ -373,6 +414,30 @@ public final class TaskWorkspace {
     private func loadTimeTools() throws {
         if pendingPausedSession == nil { activeSession = try database.activeTimeToolSession() }
         timeToolResults = try database.timeToolResults()
+    }
+
+    /// One current or nearest future occurrence per series; history stays available separately.
+    public var visibleTasks: [TaskRecord] {
+        let day = today
+        var seen: Set<UUID> = []
+        return tasks.filter { task in
+            guard task.seriesStart != nil else { return true }
+            guard let planned = task.plannedDay, planned >= day else { return false }
+            return seen.insert(task.id).inserted
+        }
+    }
+
+    public func occurrences(from firstDay: String, through lastDay: String) throws -> [TaskRecord] {
+        try validateDay(firstDay)
+        try validateDay(lastDay)
+        guard firstDay <= lastDay else { throw WorkspaceError.invalidDay }
+        tasks = try database.refreshOccurrences(today: today, timeZone: calendar().timeZone.identifier, through: lastDay)
+        return tasks.filter { $0.plannedDay.map { firstDay <= $0 && $0 <= lastDay } ?? false }
+    }
+
+    public func setRecurrence(occurrenceID: UUID, recurrence: TaskRecurrence) throws {
+        try recurrence.validate()
+        tasks = try database.setRecurrence(occurrenceID: occurrenceID, recurrence: recurrence, today: today, timeZone: calendar().timeZone.identifier)
     }
 
     public static func guestDatabaseURL(in baseDirectory: URL? = nil) throws -> URL {
