@@ -50,6 +50,12 @@ public struct TaskNote: Equatable, Sendable {
     public static let empty = TaskNote()
 }
 
+public struct LabelRecord: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let title: String
+    public let color: ProjectColor?
+}
+
 public struct TaskRecord: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let occurrenceID: UUID
@@ -60,18 +66,21 @@ public struct TaskRecord: Identifiable, Equatable, Sendable {
     public let priority: TaskPriority
     public let projectID: UUID?
     public let note: TaskNote
+    public let labelIDs: Set<UUID>
 }
 
 public struct CreationDraft: Equatable, Sendable {
     public let title: String
     public let priority: TaskPriority
     public let projectID: UUID?
+    public let labelIDs: Set<UUID>
     public let projectWasChosen: Bool
     public let plannedDay: String?
     public let dayWasChosen: Bool
     public let note: TaskNote
+    public let labelsWereChosen: Bool
 
-    public init(title: String = "", priority: TaskPriority = .none, projectID: UUID? = nil, projectWasChosen: Bool = false, plannedDay: String? = nil, dayWasChosen: Bool = false, note: TaskNote = .empty) {
+    public init(title: String = "", priority: TaskPriority = .none, projectID: UUID? = nil, projectWasChosen: Bool = false, plannedDay: String? = nil, dayWasChosen: Bool = false, note: TaskNote = .empty, labelIDs: Set<UUID> = [], labelsWereChosen: Bool = false) {
         self.title = title
         self.priority = priority
         self.projectID = projectID
@@ -79,16 +88,20 @@ public struct CreationDraft: Equatable, Sendable {
         self.note = note
         self.plannedDay = plannedDay
         self.dayWasChosen = dayWasChosen
+        self.labelIDs = labelIDs
+        self.labelsWereChosen = labelsWereChosen
     }
 
     public var isEmpty: Bool {
-        title.isEmpty && priority == .none && projectID == nil && !projectWasChosen && note == .empty && plannedDay == nil && !dayWasChosen
+        title.isEmpty && priority == .none && projectID == nil && !projectWasChosen && note == .empty && plannedDay == nil && !dayWasChosen && labelIDs.isEmpty && !labelsWereChosen
     }
 }
 
 @MainActor
 @Observable
 public final class TaskWorkspace {
+    public private(set) var lastDeletedLabel: LabelRecord?
+    public private(set) var labels: [LabelRecord] = []
     public private(set) var projects: [ProjectRecord] = []
     public private(set) var tasks: [TaskRecord] = []
     public private(set) var activeSession: TimeToolSession?
@@ -106,12 +119,47 @@ public final class TaskWorkspace {
         self.calendar = calendar
         self.dayContext = DayContext(date: now(), calendar: calendar())
         self.database = try SQLiteDatabase(url: databaseURL)
+        self.lastDeletedLabel = try database.lastDeletedLabel()
+        self.labels = try database.labels()
         self.projects = try database.projects()
         try database.restorePausedSession()
         self.tasks = try database.records()
         self.creationDraft = try database.creationDraft()
         self.activeSession = try database.activeTimeToolSession()
         self.timeToolResults = try database.timeToolResults()
+    }
+
+    @discardableResult
+    public func createLabel(title: String, color: ProjectColor? = nil) throws -> LabelRecord {
+        let label = LabelRecord(id: UUID(), title: try validatedLabelTitle(title), color: color)
+        labels = try database.insertLabel(label, createdAt: now())
+        return label
+    }
+
+    public func renameLabel(id: UUID, title: String) throws {
+        labels = try database.renameLabel(id: id, title: validatedLabelTitle(title))
+    }
+
+    public func deleteLabel(id: UUID) throws {
+        applyLabelState(try database.deleteLabel(id: id, at: now()))
+    }
+
+    public func undoLabelDeletion() throws {
+        applyLabelState(try database.undoLabelDeletion())
+    }
+
+    private func applyLabelState(_ state: SQLiteDatabase.LabelState) {
+        labels = state.labels
+        tasks = state.tasks
+        creationDraft = state.draft
+        lastDeletedLabel = state.deleted
+    }
+
+    private func validatedLabelTitle(_ input: String) throws -> String {
+        guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw WorkspaceError.emptyLabelTitle
+        }
+        return try validatedTitle(input)
     }
 
     @discardableResult
@@ -127,19 +175,19 @@ public final class TaskWorkspace {
 
     /// General creation is undated. A concrete day context passes its calendar date explicitly.
     @discardableResult
-    public func createTask(title: String, priority: TaskPriority = .none, projectID: UUID? = nil, plannedDay: String? = nil, note: TaskNote = .empty) throws -> TaskRecord {
-        try insertTask(title: title, priority: priority, projectID: projectID, plannedDay: plannedDay, note: note, consuming: nil)
+    public func createTask(title: String, priority: TaskPriority = .none, projectID: UUID? = nil, plannedDay: String? = nil, note: TaskNote = .empty, labelIDs: Set<UUID> = []) throws -> TaskRecord {
+        try insertTask(title: title, priority: priority, projectID: projectID, plannedDay: plannedDay, note: note, labelIDs: labelIDs, consuming: nil)
     }
 
     @discardableResult
     public func createTaskFromDraft() throws -> TaskRecord {
         guard let draft = creationDraft else { throw WorkspaceError.emptyTitle }
-        let task = try insertTask(title: draft.title, priority: draft.priority, projectID: draft.projectID, plannedDay: draft.plannedDay, note: draft.note, consuming: draft)
+        let task = try insertTask(title: draft.title, priority: draft.priority, projectID: draft.projectID, plannedDay: draft.plannedDay, note: draft.note, labelIDs: draft.labelIDs, consuming: draft)
         creationDraft = nil
         return task
     }
 
-    private func insertTask(title: String, priority: TaskPriority, projectID: UUID?, plannedDay: String?, note: TaskNote, consuming draft: CreationDraft?) throws -> TaskRecord {
+    private func insertTask(title: String, priority: TaskPriority, projectID: UUID?, plannedDay: String?, note: TaskNote, labelIDs: Set<UUID>, consuming draft: CreationDraft?) throws -> TaskRecord {
         let title = try validatedTitle(title)
         try validateDay(plannedDay)
         let createdAt = now()
@@ -147,7 +195,7 @@ public final class TaskWorkspace {
         let task = TaskRecord(
             id: UUID(), occurrenceID: UUID(), title: title,
             plannedDay: plannedDay,
-            timeZoneIdentifier: context.timeZone.identifier, completedAt: nil, priority: priority, projectID: projectID, note: note
+            timeZoneIdentifier: context.timeZone.identifier, completedAt: nil, priority: priority, projectID: projectID, note: note, labelIDs: labelIDs
         )
         tasks = try database.insert(task, createdAt: createdAt, consuming: draft)
         dayContext = context
@@ -178,6 +226,10 @@ public final class TaskWorkspace {
         tasks = try database.setPriority(id: id, priority: priority)
     }
 
+    public func setLabels(id: UUID, labelIDs: Set<UUID>) throws {
+        tasks = try database.setLabels(id: id, labelIDs: labelIDs)
+    }
+
     public func setProject(id: UUID, projectID: UUID?) throws {
         tasks = try database.setProject(id: id, projectID: projectID)
     }
@@ -196,24 +248,26 @@ public final class TaskWorkspace {
 
     /// Seed an untouched form from context; resume an entered draft without changing its day.
     @discardableResult
-    public func prepareCreationDraft(projectID: UUID? = nil, plannedDay: String? = nil) throws -> CreationDraft {
+    public func prepareCreationDraft(projectID: UUID? = nil, plannedDay: String? = nil, labelIDs: Set<UUID> = []) throws -> CreationDraft {
         let saved = creationDraft ?? CreationDraft()
         let hasSavedInput = !saved.title.isEmpty || saved.priority != .none || saved.projectID != nil
-            || saved.projectWasChosen || saved.note != .empty || saved.dayWasChosen
+            || saved.projectWasChosen || saved.note != .empty || saved.dayWasChosen || !saved.labelIDs.isEmpty || saved.labelsWereChosen
         let prepared = CreationDraft(
             title: saved.title, priority: saved.priority,
             projectID: creationDraft != nil ? saved.projectID : projectID,
             projectWasChosen: saved.projectWasChosen,
             plannedDay: hasSavedInput ? saved.plannedDay : plannedDay,
-            dayWasChosen: saved.dayWasChosen, note: saved.note
+            dayWasChosen: saved.dayWasChosen, note: saved.note,
+            labelIDs: creationDraft != nil ? saved.labelIDs : labelIDs, labelsWereChosen: saved.labelsWereChosen
         )
         try saveCreationDraft(prepared)
         return prepared
     }
 
-    public func saveCreationDraft(_ draft: CreationDraft) throws {
+    /// Set `replacingLabels` for an explicit picker choice, including an empty selection.
+    public func saveCreationDraft(_ draft: CreationDraft, replacingLabels: Bool = false) throws {
         try validateDay(draft.plannedDay)
-        try database.saveCreationDraft(draft)
+        try database.saveCreationDraft(draft, replacingLabels: replacingLabels)
         creationDraft = draft.isEmpty ? nil : draft
     }
 
@@ -263,6 +317,8 @@ public final class TaskWorkspace {
         dayContext = DayContext(date: now(), calendar: calendar())
         tasks = try database.records()
         projects = try database.projects()
+        labels = try database.labels()
+        lastDeletedLabel = try database.lastDeletedLabel()
         creationDraft = try database.creationDraft()
         try loadTimeTools()
     }
