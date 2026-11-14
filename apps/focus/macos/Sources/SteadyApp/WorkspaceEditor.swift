@@ -88,7 +88,7 @@ final class WorkspaceEditor {
         let project = workspace?.projects.first { $0.id == selectedProjectID }?.title
         let labels = workspace?.labels.filter { context.labelIDs.contains($0.id) }.map(\.title) ?? []
         let names = [project].compactMap { $0 } + labels
-        return ((names.isEmpty ? ["Все задачи"] : names) + [period.label]).joined(separator: " · ")
+        return (names.isEmpty ? ["Все задачи"] : names).joined(separator: " · ")
     }
     @discardableResult
     func saveNavigation() -> Bool {

@@ -3,11 +3,11 @@ import Foundation
 import SteadyCore
 import SwiftUI
 
-private enum Palette {
-    static let background = Color(red: 0.085, green: 0.085, blue: 0.10)
-    static let sidebar = Color(red: 0.11, green: 0.11, blue: 0.13)
-    static let surface = Color(red: 0.13, green: 0.13, blue: 0.15)
-    static let accent = Color(red: 0.76, green: 0.71, blue: 0.96)
+enum Palette {
+    static let background = Color(red: 23/255, green: 23/255, blue: 28/255)
+    static let sidebar = Color(red: 27/255, green: 27/255, blue: 33/255)
+    static let surface = Color(red: 30/255, green: 30/255, blue: 37/255)
+    static let accent = Color(red: 199/255, green: 190/255, blue: 252/255)
 }
 
 struct WorkspaceView: View {
@@ -18,49 +18,55 @@ struct WorkspaceView: View {
     @State private var editingLabel: LabelRecord?
     @State private var editingProject: ProjectRecord?
     @State private var historyVisible = false
+    @State private var collapsedGroups: Set<String> = []
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            HStack(spacing: 0) {
-                if editor.sidebarVisible {
-                    sidebar
-                    Divider()
-                }
-                if editor.screen == .report {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 24) {
-                            Text("Отчёт").font(.system(size: 24, weight: .semibold))
-                            RunHistory(results: editor.workspace?.timeToolResults ?? [])
-                        }.padding(26).frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                } else {
-                    taskList
-                }
-                if editor.workspace != nil, editor.screen == .tasks {
-                    if editor.isCreating {
-                        Divider()
-                        CreationPanel(editor: editor)
-                            .frame(width: 300)
-                            .background(Palette.sidebar)
-                    } else if editor.detailsVisible, let task = editor.selectedTask {
-                        Divider()
-                        DetailPanel(editor: editor, task: task)
-                            .id(task.occurrenceID)
-                            .frame(width: 300)
-                            .background(Palette.sidebar)
-                    }
-                }
-            }
-            if let workspace = editor.workspace, let session = workspace.activeSession {
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                header
                 Divider()
-                SessionBar(editor: editor, session: session)
+                HStack(spacing: 0) {
+                    if editor.sidebarVisible && !(geometry.size.width < 1050 && panelVisible) {
+                        sidebar
+                        Divider()
+                    }
+                    if editor.screen == .report {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 24) {
+                                Text("Отчёт").font(.system(size: 21, weight: .semibold))
+                                RunHistory(results: editor.workspace?.timeToolResults ?? [])
+                            }.padding(26).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    } else if !(geometry.size.width < 1050 && panelVisible) {
+                        taskList
+                    }
+                    if editor.workspace != nil, editor.screen == .tasks {
+                        if editor.isCreating {
+                            Divider()
+                            CreationPanel(editor: editor, isPage: geometry.size.width < 1050)
+                                .frame(width: geometry.size.width < 1050 ? nil : 400)
+                                .frame(maxWidth: geometry.size.width < 1050 ? .infinity : nil)
+                                .background(Palette.sidebar)
+                        } else if editor.detailsVisible, let task = editor.selectedTask {
+                            Divider()
+                            DetailPanel(editor: editor, task: task, isPage: geometry.size.width < 1050)
+                                .id(task.occurrenceID)
+                                .frame(width: geometry.size.width < 1050 ? nil : 340)
+                                .frame(maxWidth: geometry.size.width < 1050 ? .infinity : nil)
+                                .background(Palette.sidebar)
+                        }
+                    }
+                }
+                if let workspace = editor.workspace, let session = workspace.activeSession {
+                    Divider()
+                    SessionBar(editor: editor, session: session)
+                }
             }
         }
-        .frame(minWidth: 850, minHeight: 560)
+        .ignoresSafeArea(.container, edges: .top)
+        .frame(minWidth: 580, minHeight: 500)
         .background(Palette.background)
         .tint(Palette.accent)
         .sheet(isPresented: $projectEditorVisible) {
@@ -93,6 +99,8 @@ struct WorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in editor.reload() }
     }
 
+    private var panelVisible: Bool { editor.screen == .tasks && (editor.isCreating || (editor.detailsVisible && editor.selectedTask != nil)) }
+
     private var header: some View {
         HStack(spacing: 14) {
             Button { editor.sidebarVisible.toggle() } label: {
@@ -101,18 +109,17 @@ struct WorkspaceView: View {
             .buttonStyle(.plain)
             .help("Показать или скрыть боковую панель")
             .accessibilityLabel("Боковая панель")
-            Button {
-                if editor.beginSearch() { searchFocused = true }
-            } label: { Label("Поиск", systemImage: "magnifyingglass") }
-            .keyboardShortcut("f", modifiers: .command)
-            .help("Поиск · ⌘F")
-            .accessibilityIdentifier("task-search-open")
             Text("Steady").font(.system(size: 14, weight: .semibold))
+            Menu {
+                Text("Гость · локально")
+                Text("Данные хранятся на этом Mac")
+            } label: { Label("Аккаунт", systemImage: "person") }
+            .menuStyle(.borderlessButton).fixedSize().font(.system(size: 12)).foregroundStyle(.secondary)
             Spacer()
             if editor.workspace != nil {
-                ToolMenu(editor: editor, task: nil)
+                ToolMenu(editor: editor, task: nil, compact: true)
                 Button { historyVisible.toggle() } label: {
-                    Label("История", systemImage: "clock.arrow.circlepath")
+                    Image(systemName: "clock.arrow.circlepath")
                 }
                 .buttonStyle(.plain)
                 .popover(isPresented: $historyVisible) {
@@ -123,35 +130,45 @@ struct WorkspaceView: View {
                     .frame(width: 360, height: 400)
                 }
             }
-            Label("Гость · локально", systemImage: "person.crop.circle")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+            Menu {
+                Toggle("Боковая панель", isOn: $editor.sidebarVisible)
+                Button("Поиск") { if editor.beginSearch() { searchFocused = true } }
+                    .keyboardShortcut("f", modifiers: .command)
+                Toggle("Показать выполненные", isOn: $editor.context.showCompleted)
+                Button("Сбросить фильтры") { editor.selectProject(nil) }
+            } label: { Image(systemName: "gearshape") }
+            .menuStyle(.borderlessButton).fixedSize()
+            .accessibilityLabel("Настройки вида")
         }
-        .padding(.leading, 80)
-        .padding(.trailing, 22)
+        .padding(.leading, 94)
+        .padding(.trailing, 20)
         .frame(height: 48)
         .background(Palette.sidebar)
     }
 
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 0) {
             Button {
                 if editor.beginSearch() { searchFocused = true }
             } label: {
-                Label("Поиск · ⌘F", systemImage: "magnifyingglass")
-                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-            }.buttonStyle(.plain)
+                Label("Поиск", systemImage: "magnifyingglass")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 8).frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                    .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.12)))
+            }.buttonStyle(.plain).padding(.bottom, 16)
+            .accessibilityIdentifier("task-search-open")
             Button { editor.selectProject(nil) } label: {
                 Label("Все задачи", systemImage: "list.bullet")
                     .font(.system(size: 13, weight: .medium))
-                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 9).frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
                     .background(editor.screen == .tasks && editor.selectedProjectID == nil && editor.context.labelIDs.isEmpty ? Palette.accent.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
             }
             .buttonStyle(.plain)
             Button(action: editor.openReport) {
                 Label("Отчёт", systemImage: "chart.bar")
                     .font(.system(size: 13, weight: .medium))
-                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 9).frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
                     .background(editor.screen == .report ? Palette.accent.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
             }.buttonStyle(.plain).accessibilityIdentifier("report-navigation")
             HStack {
@@ -161,18 +178,19 @@ struct WorkspaceView: View {
                     .buttonStyle(.plain).accessibilityLabel("Создать проект")
                     .disabled(editor.workspace == nil)
             }
+            .padding(.horizontal, 9).padding(.top, 20).padding(.bottom, 8)
             ScrollView {
-                VStack(spacing: 4) {
+                VStack(spacing: 0) {
                     ForEach(editor.workspace?.projects ?? []) { project in
                         Button { editor.selectProject(project.id) } label: {
                             HStack {
-                                ProjectMarker(color: project.color)
+                                Image(systemName: "folder").foregroundStyle(.secondary)
                                 Text(project.title).lineLimit(2)
                                 Spacer()
                                 Text("\(editor.workspace?.openTaskCount(in: project.id) ?? 0)")
                                     .foregroundStyle(.secondary)
                             }
-                            .font(.system(size: 12)).padding(10)
+                            .font(.system(size: 12)).padding(.horizontal, 9).frame(minHeight: 36)
                             .background(editor.screen == .tasks && editor.selectedProjectID == project.id ? Palette.accent.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
                         }
                         .buttonStyle(.plain)
@@ -180,7 +198,7 @@ struct WorkspaceView: View {
                             Button("Переименовать проект") { editingProject = project; projectEditorVisible = true }
                         }
                     }
-                    Divider().padding(.vertical, 10)
+                    Color.clear.frame(height: 24)
                     HStack {
                         Text("Метки").font(.system(size: 11)).foregroundStyle(.secondary)
                         Spacer()
@@ -192,11 +210,11 @@ struct WorkspaceView: View {
                     ForEach(editor.workspace?.labels ?? []) { label in
                         Button { editor.selectLabel(label.id) } label: {
                             HStack {
-                                ProjectMarker(color: label.color)
+                                Image(systemName: "tag").foregroundStyle(.secondary)
                                 Text(label.title).lineLimit(2)
                                 Spacer()
                             }
-                            .font(.system(size: 12)).padding(10)
+                            .font(.system(size: 12)).padding(.horizontal, 9).frame(minHeight: 36)
                             .background(editor.screen == .tasks && editor.context.labelIDs.contains(label.id) ? Palette.accent.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
                         }
                         .buttonStyle(.plain)
@@ -208,18 +226,18 @@ struct WorkspaceView: View {
                 }
             }
             Spacer()
-            Label("Данные на этом Mac", systemImage: "internaldrive")
+            Label("Гость · локально", systemImage: "circle.fill")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
         }
-        .padding(12)
-        .padding(.top, 12)
-        .frame(width: 184)
+        .padding(10)
+        .padding(.top, 2)
+        .frame(width: 192)
         .background(Palette.sidebar)
     }
 
     private var taskList: some View {
         let result = editor.listResult
-        return VStack(alignment: .leading, spacing: 18) {
+        return VStack(alignment: .leading, spacing: 10) {
             if editor.isSearching {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
@@ -247,7 +265,7 @@ struct WorkspaceView: View {
             }
             HStack {
                 Text(editor.contextTitle)
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(.system(size: editor.isCreating ? 20 : 23, weight: .semibold))
                 if let project = editor.workspace?.projects.first(where: { $0.id == editor.selectedProjectID }) {
                     Button { editingProject = project; projectEditorVisible = true } label: { Image(systemName: "pencil") }
                         .buttonStyle(.plain).accessibilityLabel("Переименовать проект")
@@ -262,14 +280,13 @@ struct WorkspaceView: View {
                 Label("Список", systemImage: "list.bullet")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
             }
-            HStack(spacing: 8) {
+            HStack(spacing: 2) {
                 ForEach([TaskPeriod.all, .today, .tomorrow], id: \.self) { period in
                     periodButton(period)
                 }
                 MorePeriods(selected: editor.period, select: editor.selectPeriod)
                 periodButton(.completed)
-            }
-            HStack(spacing: 12) {
+                Spacer(minLength: 4)
                 Menu {
                     ForEach(editor.workspace?.labels ?? []) { label in
                         Toggle(label.title, isOn: Binding(get: { editor.context.labelIDs.contains(label.id) }, set: { _ in editor.selectLabel(label.id) }))
@@ -283,20 +300,11 @@ struct WorkspaceView: View {
                         Button("Сбросить метки") { editor.context.labelIDs = [] }
                     }
                 } label: {
-                    Label(editor.context.labelIDs.isEmpty ? "Метки · любая" : "Метки: \(editor.context.labelIDs.count) · \(editor.context.labelMatch == .any ? "любая" : "все")", systemImage: "tag")
+                    Label(editor.context.labelIDs.isEmpty ? "Метки" : "Метки: \(editor.context.labelIDs.count) · \(editor.context.labelMatch == .any ? "любая" : "все")", systemImage: "tag")
                 }
+                .menuStyle(.borderlessButton).fixedSize().font(.system(size: 11))
                 .accessibilityIdentifier("task-label-filter")
-                if editor.period != .completed {
-                    Toggle("Показать выполненные", isOn: $editor.context.showCompleted)
-                        .toggleStyle(.checkbox).font(.system(size: 11))
-                }
-                if editor.selectedProjectID != nil || !editor.context.labelIDs.isEmpty {
-                    Button("Сбросить фильтры") { editor.selectProject(nil) }
-                        .buttonStyle(.plain).font(.system(size: 11))
-                }
             }
-
-
 
             if let openingError = editor.openingError {
                 StorageNotice(message: openingError)
@@ -325,14 +333,32 @@ struct WorkspaceView: View {
                     Button("Вернуться к черновику", action: editor.openCreation)
                 }
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 8) {
                         if let result {
                             if result.matches.isEmpty {
                                 emptyState
                             } else {
-                                ForEach(result.groups) { group in
-                                    sectionLabel(group.title, count: group.matchCount)
-                                    ForEach(group.roots, id: \.occurrenceID) { taskRow($0, result: result) }
+                                ForEach(displayGroups(result.groups)) { group in
+                                    if group.id != "unassigned" {
+                                        if group.id == "overdue" || group.id == "weekly-undated" {
+                                            sectionLabel(group.title, count: group.matchCount)
+                                        } else {
+                                            Button {
+                                                if !collapsedGroups.insert(group.id).inserted {
+                                                    collapsedGroups.remove(group.id)
+                                                }
+                                            } label: {
+                                                HStack(spacing: 8) {
+                                                    Image(systemName: collapsedGroups.contains(group.id) ? "chevron.right" : "chevron.down").font(.system(size: 9))
+                                                    Image(systemName: "folder").font(.system(size: 12))
+                                                    sectionLabel(group.title, count: group.matchCount)
+                                                }.frame(maxWidth: .infinity, alignment: .leading)
+                                            }.buttonStyle(.plain).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    if !collapsedGroups.contains(group.id) {
+                                        ForEach(group.roots, id: \.occurrenceID) { taskRow($0, result: result) }
+                                    }
                                 }
                             }
                         }
@@ -345,7 +371,8 @@ struct WorkspaceView: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(26)
+        .padding(.horizontal, editor.isCreating ? 16 : 20)
+        .padding(.top, 24).padding(.bottom, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -362,18 +389,24 @@ struct WorkspaceView: View {
         .frame(maxWidth: .infinity).padding(.vertical, 80)
     }
 
+    private func displayGroups(_ groups: [TaskListGroup]) -> [TaskListGroup] {
+        groups.filter { $0.id == "unassigned" }
+            + groups.filter { $0.id != "unassigned" && $0.id != "overdue" }
+            + groups.filter { $0.id == "overdue" }
+    }
+
     private func sectionLabel(_ title: String, count: Int) -> some View {
         HStack(spacing: 8) {
             Text(title)
             Text("\(count)").foregroundStyle(.tertiary)
         }
-        .font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 5)
+        .font(.system(size: 13)).foregroundStyle(.secondary).padding(.top, 22).padding(.bottom, 10)
     }
 
     private func periodButton(_ period: TaskPeriod) -> some View {
         Button { editor.selectPeriod(period) } label: {
-            Text(period.label).font(.system(size: 12))
-                .padding(.horizontal, 10).padding(.vertical, 7)
+            Label(period.label, systemImage: period == .all ? "list.bullet" : period == .completed ? "checkmark" : "calendar").font(.system(size: 11))
+                .padding(.horizontal, 8).padding(.vertical, 7)
                 .background(editor.period == period ? Palette.accent.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 7))
         }.buttonStyle(.plain).accessibilityAddTraits(editor.period == period ? .isSelected : [])
     }
@@ -383,13 +416,6 @@ struct WorkspaceView: View {
         let isContext = result.contextParentIDs.contains(task.occurrenceID)
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
-                if !children.isEmpty && !isContext {
-                    Button {
-                        if !editor.expandedParents.insert(task.occurrenceID).inserted { editor.expandedParents.remove(task.occurrenceID) }
-                    } label: {
-                        Label("\(children.count)", systemImage: editor.expandedParents.contains(task.occurrenceID) ? "chevron.down" : "chevron.right")
-                    }.buttonStyle(.plain).accessibilityLabel("Подзадачи: \(children.count)")
-                }
                 if isContext {
                     Button { editor.selectTask(task) } label: {
                         HStack {
@@ -399,7 +425,7 @@ struct WorkspaceView: View {
                         }
                     }.buttonStyle(.plain).padding(.vertical, 8)
                 } else {
-                    plainTaskRow(task)
+                    plainTaskRow(task, childCount: children.count)
                 }
             }
             if task.completedAt != nil && children.contains(where: { $0.completedAt == nil }) {
@@ -407,16 +433,22 @@ struct WorkspaceView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             if editor.expandedParents.contains(task.occurrenceID) || isContext || !editor.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                ForEach(children, id: \.occurrenceID) { child in plainTaskRow(child).padding(.leading, 28) }
+                VStack(spacing: 8) {
+                    ForEach(children, id: \.occurrenceID) { child in plainTaskRow(child) }
+                }
+                .padding(.leading, 12)
+                .overlay(alignment: .leading) { Rectangle().fill(Color.white.opacity(0.1)).frame(width: 1) }
+                .padding(.leading, 32)
             }
         }
     }
 
-    private func plainTaskRow(_ task: TaskRecord) -> some View {
-        HStack(spacing: 14) {
+    private func plainTaskRow(_ task: TaskRecord, childCount: Int = 0) -> some View {
+        let isChild = task.parentTaskID != nil
+        return HStack(spacing: 10) {
             Button { editor.setCompleted(task) } label: {
                 Image(systemName: task.skippedAt != nil ? "forward.end.circle" : (task.completedAt == nil ? "circle" : "checkmark.circle.fill"))
-                    .font(.system(size: 21, weight: .light))
+                    .font(.system(size: 20, weight: .ultraLight)).frame(width: 32, height: 36)
                     .foregroundStyle(task.completedAt == nil ? Color.secondary : Palette.accent)
             }
             .buttonStyle(.plain)
@@ -427,10 +459,15 @@ struct WorkspaceView: View {
             Button { editor.selectTask(task) } label: {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(task.title)
-                        .font(.system(size: 14))
+                        .font(.system(size: editor.isCreating || isChild ? 13 : 15))
                         .strikethrough(task.completedAt != nil)
                         .foregroundStyle(task.completedAt == nil ? Color.primary : Color.secondary)
-                        .lineLimit(3)
+                        .lineLimit(2)
+                    HStack(spacing: 7) {
+                    if let recurrence = task.recurrence {
+                        Label(recurrenceLabel(recurrence), systemImage: "arrow.left.arrow.right")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
                     if let workspace = editor.workspace, !task.labelIDs.isEmpty {
                         LabelChips(labels: workspace.labels, selection: task.labelIDs)
                     }
@@ -438,20 +475,31 @@ struct WorkspaceView: View {
                         Label(task.priority.label, systemImage: "flag")
                             .font(.system(size: 10)).foregroundStyle(.secondary)
                     }
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }
             .buttonStyle(.plain).help(task.title)
             .accessibilityIdentifier("select-\(task.occurrenceID)")
 
+            if childCount > 0 {
+                Button {
+                    if !editor.expandedParents.insert(task.occurrenceID).inserted { editor.expandedParents.remove(task.occurrenceID) }
+                } label: {
+                    Label("\(childCount)", systemImage: "point.3.connected.trianglepath.dotted")
+                        .font(.system(size: 11)).foregroundStyle(.secondary).frame(minWidth: 42, minHeight: 36)
+                }.buttonStyle(.plain).accessibilityLabel("Подзадачи: \(childCount)")
+                .accessibilityValue(editor.expandedParents.contains(task.occurrenceID) ? "Раскрыты" : "Свёрнуты")
+            }
             Text(occurrenceDayLabel(task, today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow))
                 .font(.system(size: 11)).foregroundStyle(.secondary)
         }
-        .padding(16)
-        .background(Palette.surface, in: RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, isChild ? 10 : 14).padding(.vertical, isChild ? 8 : 12)
+        .frame(minHeight: isChild ? 56 : 68)
+        .background(editor.selectedID == task.occurrenceID ? Color(red: 44/255, green: 38/255, blue: 55/255) : isChild ? Color(red: 26/255, green: 26/255, blue: 33/255) : Palette.surface, in: RoundedRectangle(cornerRadius: 8))
         .overlay {
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(editor.selectedID == task.occurrenceID ? Palette.accent.opacity(0.6) : .clear, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(editor.selectedID == task.occurrenceID ? Palette.accent.opacity(0.19) : .clear, lineWidth: 1)
         }
     }
 }
@@ -459,10 +507,17 @@ struct WorkspaceView: View {
 private struct CreationPanel: View {
     @Bindable var editor: WorkspaceEditor
     @FocusState private var titleFocused: Bool
+    var isPage = false
     @State private var confirmingDiscard = false
 
     var body: some View {
-        ScrollView { panelContent.frame(maxWidth: .infinity) }
+        VStack(spacing: 0) {
+            PanelHeader(title: "Новая задача", isPage: isPage, close: editor.closeCreation)
+            ScrollView { panelContent.frame(maxWidth: .infinity) }
+            Divider()
+            creationFooter.padding(.horizontal, 20).frame(height: 56)
+        }
+        .background(Color(red: 31/255, green: 29/255, blue: 38/255))
     }
 
     /// SwiftUI can retain a child binding after the draft is consumed or a sibling is removed.
@@ -480,36 +535,30 @@ private struct CreationPanel: View {
     }
 
     private var panelContent: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("Новая задача").font(.system(size: 15, weight: .semibold))
-                Spacer()
-                Button(action: editor.closeCreation) { Image(systemName: "xmark") }
-                    .buttonStyle(.plain).keyboardShortcut(.cancelAction)
-                    .accessibilityLabel("Закрыть создание")
-            }
-            Divider()
+        VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Название").font(.system(size: 11)).foregroundStyle(.secondary)
+                Text("Название").font(.system(size: 12)).foregroundStyle(.secondary)
                 TextField("Что нужно сделать?", text: Binding(
                     get: { editor.draftTitle },
                     set: { editor.draftTitle = $0; editor.saveDraft() }
                 ), axis: .vertical)
-                    .textFieldStyle(.plain).font(.system(size: 19, weight: .medium))
-                    .lineLimit(1...5).focused($titleFocused)
+                    .textFieldStyle(.plain).font(.system(size: 21, weight: .medium))
+                    .lineLimit(1...5).frame(minHeight: 42).focused($titleFocused)
                     .onSubmit(editor.createTask)
                     .accessibilityLabel("Название задачи").accessibilityIdentifier("task-title")
             }
-            Divider()
-            RecurrenceField(selection: Binding(get: { editor.draftRecurrence }, set: { editor.changeDraftRecurrence($0) }))
-            if editor.draftRecurrence != nil {
-                ScheduleField(day: Binding(get: { editor.draftSeriesStart ?? editor.workspace?.today }, set: {
-                    editor.draftSeriesStart = $0 ?? editor.workspace?.today; editor.saveDraft()
-                }), today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow, title: "Начало серии", allowsUndated: false)
-            } else {
-            ScheduleField(day: Binding(get: { editor.draftDay }, set: {
-                editor.draftDay = $0; editor.draftDayWasChosen = true; editor.saveDraft()
-            }), today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow)
+            Divider().padding(.top, 24)
+            SchedulePopover(summary: editor.draftRecurrence.map(recurrenceLabel) ?? dayLabel(editor.draftDay, today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow)) {
+                RecurrenceField(selection: Binding(get: { editor.draftRecurrence }, set: { editor.changeDraftRecurrence($0) }))
+                if editor.draftRecurrence != nil {
+                    ScheduleField(day: Binding(get: { editor.draftSeriesStart ?? editor.workspace?.today }, set: {
+                        editor.draftSeriesStart = $0 ?? editor.workspace?.today; editor.saveDraft()
+                    }), today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow, title: "Начало серии", allowsUndated: false)
+                } else {
+                ScheduleField(day: Binding(get: { editor.draftDay }, set: {
+                    editor.draftDay = $0; editor.draftDayWasChosen = true; editor.saveDraft()
+                }), today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow)
+                }
             }
             ProjectField(projects: editor.workspace?.projects ?? [], selection: Binding(
                 get: { editor.draftProjectID },
@@ -531,23 +580,24 @@ private struct CreationPanel: View {
                     get: { editor.draftNote },
                     set: { editor.draftNote = $0; editor.saveDraft() }
                 ), accessibilityID: "creation-note")
-                .frame(height: 180)
-            }
+                .frame(height: 100)
+            }.padding(.top, 20)
             VStack(alignment: .leading, spacing: 12) {
-                Text("Подзадачи").font(.headline)
+                Text("Подзадачи").font(.system(size: 12, weight: .semibold))
                 ForEach(editor.draftChildren) { child in
                     DisclosureGroup(child.title.isEmpty ? "Новая подзадача" : child.title) {
                         TextField("Название подзадачи", text: childBinding(child, \.title))
                         if let workspace = editor.workspace {
                             LabelField(workspace: workspace, selection: childBinding(child, \.labelIDs, replacingLabels: true))
                         }
-                        TaskNoteEditor(note: childBinding(child, \.note), accessibilityID: "child-note-\(child.id)").frame(height: 130)
+                        TaskNoteEditor(note: childBinding(child, \.note), accessibilityID: "child-note-\(child.id)").frame(height: 100)
                         Button("Удалить подзадачу") { editor.draftChildren.removeAll { $0.id == child.id }; editor.saveDraft() }
                     }
                 }
                 Button("Добавить подзадачу") { editor.draftChildren.append(SubtaskDraft()); editor.saveDraft() }
                 Text("Проект и повтор — как у родителя. Метки и заметка — свои.").font(.caption).foregroundStyle(.secondary)
             }
+            .padding(.top, 20)
             if let error = editor.draftError {
                 StorageNotice(message: error)
                 Button("Повторить сохранение черновика") { editor.saveDraft() }
@@ -555,20 +605,9 @@ private struct CreationPanel: View {
                 Text("Черновик сохраняется на этом Mac")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
-            Spacer()
-            Divider()
-            HStack {
-                Button { confirmingDiscard = true } label: { Image(systemName: "trash") }
-                    .buttonStyle(.plain).accessibilityLabel("Удалить черновик")
-                Button("Закрыть", action: editor.closeCreation).buttonStyle(.plain)
-                Spacer()
-                Button(editor.draftError == nil ? "Создать" : "Повторить создание", action: editor.createTask)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(editor.draftTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityIdentifier("save-task")
-            }
+
         }
-        .padding(22)
+        .padding(.horizontal, 20).padding(.vertical, 16)
         .defaultFocus($titleFocused, true)
         .task { await Task.yield(); titleFocused = true }
         .alert("Удалить черновик?", isPresented: $confirmingDiscard) {
@@ -576,26 +615,44 @@ private struct CreationPanel: View {
             Button("Удалить", role: .destructive, action: editor.discardDraft)
         } message: { Text("Введённые данные и выбранные параметры будут удалены.") }
     }
+    private var creationFooter: some View {
+            HStack {
+                Button("Закрыть", action: editor.closeCreation).buttonStyle(.plain)
+                Spacer()
+                Button { confirmingDiscard = true } label: { Image(systemName: "trash") }
+                    .buttonStyle(.plain).accessibilityLabel("Удалить черновик")
+                Spacer()
+                Button(editor.draftError == nil ? "Создать" : "Повторить создание", action: editor.createTask)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(editor.draftTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("save-task")
+            }
+    }
+
 }
 
 private struct DetailPanel: View {
     @Bindable var editor: WorkspaceEditor
     let task: TaskRecord
+    var isPage = false
     @FocusState private var titleFocused: Bool
 
     var body: some View {
-        ScrollView { panelContent.frame(maxWidth: .infinity) }
+        VStack(spacing: 0) {
+            PanelHeader(title: "Детали задачи", isPage: isPage, close: editor.closeDetails)
+            ScrollView { panelContent.frame(maxWidth: .infinity) }
+            Divider()
+            HStack {
+                Button("Закрыть", action: editor.closeDetails).buttonStyle(.plain)
+                Spacer()
+                ToolMenu(editor: editor, task: task, compact: true)
+            }.padding(.horizontal, 24).frame(height: 56)
+        }
+        .background(Color(red: 29/255, green: 29/255, blue: 36/255))
     }
 
     private var panelContent: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("Детали задачи").font(.system(size: 15, weight: .semibold))
-                Spacer()
-                Button(action: editor.closeDetails) { Image(systemName: "xmark") }
-                    .buttonStyle(.plain).accessibilityLabel("Закрыть детали")
-            }
-            Divider()
+        VStack(alignment: .leading, spacing: 0) {
             TextField("Название задачи", text: $editor.detailTitle, axis: .vertical)
                 .textFieldStyle(.plain).font(.system(size: 19, weight: .medium))
                 .lineLimit(1...5).focused($titleFocused)
@@ -611,35 +668,37 @@ private struct DetailPanel: View {
                 }
                 Text("Проект и расписание — как у родителя. Для своего расписания создайте отдельную задачу.").font(.caption).foregroundStyle(.secondary)
             } else {
-            RecurrenceField(selection: Binding(get: { editor.detailRecurrence }, set: { editor.changeRecurrence($0) }), allowsNoRepeat: task.seriesStart == nil)
-            if editor.detailRecurrence != task.recurrence {
-                Button("Применить: этот и будущие") { editor.saveRecurrence() }
-                    .buttonStyle(.bordered)
-            }
-            if task.seriesStart != nil {
-                Text("Начало серии: \(task.seriesStart ?? ""). Изменение повтора сохраняет выполненные экземпляры, работу и индивидуальные переносы.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                if let end = task.periodEnd, let start = task.seriesDay {
-                    Text("Неделя: \(start) — \(end)").font(.system(size: 11)).foregroundStyle(.secondary)
-                    ScheduleField(day: Binding(get: { editor.detailDay }, set: { editor.changeDay($0) }),
-                                  today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow,
-                                  allowedDays: start...end)
-                    Text("День необязателен; выбрать можно только в пределах этой недели.")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                    Button(task.skippedAt == nil ? "Пропустить выполнение" : "Вернуть в работу") { editor.toggleSkipped(task) }
+            SchedulePopover(summary: task.recurrence.map(recurrenceLabel) ?? dayLabel(task.plannedDay, today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow)) {
+                RecurrenceField(selection: Binding(get: { editor.detailRecurrence }, set: { editor.changeRecurrence($0) }), allowsNoRepeat: task.seriesStart == nil)
+                if editor.detailRecurrence != task.recurrence {
+                    Button("Применить: этот и будущие") { editor.saveRecurrence() }
                         .buttonStyle(.bordered)
-                        .disabled(task.skippedAt == nil && editor.workspace?.activeSession?.occurrenceID == task.occurrenceID)
-                    if editor.workspace?.activeSession?.occurrenceID == task.occurrenceID {
-                        Text("Сначала нажмите Stop, затем пропустите выполнение.")
+                }
+                if task.seriesStart != nil {
+                    Text("Начало серии: \(task.seriesStart ?? ""). Изменение повтора сохраняет выполненные экземпляры, работу и индивидуальные переносы.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    if let end = task.periodEnd, let start = task.seriesDay {
+                        Text("Неделя: \(start) — \(end)").font(.system(size: 11)).foregroundStyle(.secondary)
+                        ScheduleField(day: Binding(get: { editor.detailDay }, set: { editor.changeDay($0) }),
+                                      today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow,
+                                      allowedDays: start...end)
+                        Text("День необязателен; выбрать можно только в пределах этой недели.")
                             .font(.system(size: 11)).foregroundStyle(.secondary)
+                        Button(task.skippedAt == nil ? "Пропустить выполнение" : "Вернуть в работу") { editor.toggleSkipped(task) }
+                            .buttonStyle(.bordered)
+                            .disabled(task.skippedAt == nil && editor.workspace?.activeSession?.occurrenceID == task.occurrenceID)
+                        if editor.workspace?.activeSession?.occurrenceID == task.occurrenceID {
+                            Text("Сначала нажмите Stop, затем пропустите выполнение.")
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Label(dayLabel(task.plannedDay, today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow), systemImage: "calendar")
+                            .font(.system(size: 12))
                     }
                 } else {
-                    Label(dayLabel(task.plannedDay, today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow), systemImage: "calendar")
-                        .font(.system(size: 12))
+                ScheduleField(day: Binding(get: { editor.detailDay }, set: { editor.changeDay($0) }),
+                              today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow)
                 }
-            } else {
-            ScheduleField(day: Binding(get: { editor.detailDay }, set: { editor.changeDay($0) }),
-                          today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow)
             }
             ProjectField(projects: editor.workspace?.projects ?? [], selection: Binding(
                 get: { editor.detailProjectID }, set: { editor.changeProject($0) }
@@ -657,10 +716,11 @@ private struct DetailPanel: View {
                     get: { editor.detailNote },
                     set: { editor.detailNote = $0; editor.saveNote() }
                 ), accessibilityID: "detail-note")
-                .frame(height: 220)
-            }
+                .frame(height: 100)
+            }.padding(.top, 20)
             if task.parentTaskID == nil {
-                Text("Подзадачи").font(.headline)
+                Divider().padding(.vertical, 16)
+                Text("Подзадачи").font(.system(size: 12, weight: .semibold))
                 ForEach(editor.workspace?.children(of: task.occurrenceID) ?? [], id: \.occurrenceID) { child in
                     HStack {
                         Button { editor.setCompleted(child) } label: { Image(systemName: child.completedAt == nil ? "circle" : "checkmark.circle.fill") }.buttonStyle(.plain)
@@ -672,7 +732,6 @@ private struct DetailPanel: View {
                     Button("Добавить", action: editor.addChild)
                 }
             }
-            ToolMenu(editor: editor, task: task)
             if let error = editor.detailError {
                 StorageNotice(message: error)
                 Button("Повторить сохранение") { editor.saveDetails() }
@@ -680,11 +739,90 @@ private struct DetailPanel: View {
             }
             Label(occurrenceStatus(task, today: editor.workspace?.today), systemImage: task.skippedAt != nil ? "forward.end.circle" : (task.completedAt == nil ? "circle" : "checkmark.circle"))
                 .font(.system(size: 12)).foregroundStyle(.secondary)
-            RunHistory(results: editor.workspace?.timeToolResults.filter { $0.occurrenceID == task.occurrenceID } ?? [])
+            Divider().padding(.vertical, 16)
+            DisclosureGroup("История запусков") {
+                RunHistory(results: editor.workspace?.timeToolResults.filter { $0.occurrenceID == task.occurrenceID } ?? [])
+            }.font(.system(size: 12)).foregroundStyle(.secondary)
             Spacer(minLength: 0)
         }
-        .padding(22)
+        .padding(.horizontal, 24).padding(.vertical, 16)
         .onExitCommand { editor.closeDetails() }
+    }
+}
+
+struct PropertyRow<Content: View>: View {
+    let title: String
+    let icon: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Label(title, systemImage: icon).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            content.font(.system(size: 13))
+        }
+        .font(.system(size: 12)).frame(minHeight: 42)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+}
+
+struct PropertyValue: View {
+    let title: String
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title).lineLimit(1)
+            Image(systemName: "chevron.right").font(.system(size: 10))
+        }
+    }
+}
+
+private struct PanelHeader: View {
+    let title: String
+    let isPage: Bool
+    let close: () -> Void
+
+    var body: some View {
+        HStack {
+            if isPage {
+                Button(action: close) { Label("Назад", systemImage: "chevron.left") }
+                    .buttonStyle(.plain).foregroundStyle(Palette.accent)
+            }
+            Text(title).font(.system(size: 14, weight: .semibold))
+            Spacer()
+            Button(action: close) { Image(systemName: "xmark") }
+                .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel("Закрыть")
+        }.padding(.horizontal, 20).frame(height: 60)
+            .overlay(alignment: .bottom) { Divider() }
+    }
+}
+
+private struct SchedulePopover<Content: View>: View {
+    let summary: String
+    @ViewBuilder var content: Content
+    @State private var expanded = false
+
+    var body: some View {
+        Button { expanded = true } label: {
+            PropertyRow(title: "Расписание", icon: "calendar") {
+                HStack(spacing: 8) { Text(summary); Image(systemName: "chevron.right").font(.system(size: 10)) }
+            }
+        }.buttonStyle(.plain).accessibilityIdentifier("task-schedule-open")
+        .popover(isPresented: $expanded) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Расписание").font(.headline)
+                content
+                HStack { Spacer(); Button("Готово") { expanded = false } }
+            }.padding(20).frame(width: 330)
+        }
+    }
+}
+
+private func recurrenceLabel(_ recurrence: TaskRecurrence) -> String {
+    switch recurrence {
+    case .daily: "Каждый день"
+    case .weekdays: "По будням"
+    case .selectedWeekdays: "Выбранные дни"
+    case .weekly: "Раз в неделю"
     }
 }
 
@@ -692,13 +830,16 @@ private struct PriorityField: View {
     @Binding var selection: TaskPriority
 
     var body: some View {
-        Picker("Приоритет", selection: $selection) {
-            ForEach(TaskPriority.allCases, id: \.self) { priority in
-                Text(priority.label).tag(priority)
-            }
+        PropertyRow(title: "Приоритет", icon: "line.3.horizontal.decrease") {
+            Menu {
+                ForEach(TaskPriority.allCases, id: \.self) { priority in
+                    Button(priority.label) { selection = priority }
+                }
+            } label: { PropertyValue(title: selection.label) }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .accessibilityIdentifier("task-priority")
+                .accessibilityValue(selection.label)
         }
-        .pickerStyle(.menu).font(.system(size: 12))
-        .accessibilityIdentifier("task-priority")
     }
 }
 
@@ -868,11 +1009,19 @@ private struct ToolMenu: View {
                 Text("Верните задачу в невыполненные для нового запуска")
             }
         } label: {
-            if compact { Image(systemName: "stopwatch") }
+            if compact {
+                HStack(spacing: 4) {
+                    Image(systemName: "play").font(.system(size: 11))
+                    Image(systemName: "chevron.down").font(.system(size: 7))
+                }
+                .foregroundStyle(Palette.accent).frame(width: 40, height: 32)
+                .background(Color(red: 48/255, green: 47/255, blue: 59/255), in: Capsule())
+            }
             else { Label(task == nil ? "Без задачи" : "Инструменты", systemImage: "stopwatch") }
         }
         .accessibilityLabel(task.map { "Инструменты: " + $0.title } ?? "Инструменты без задачи")
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
         .help("Выбрать инструмент времени" + (task == nil ? " без задачи" : ""))
         .accessibilityIdentifier(task.map { "task-tools-\($0.id)" } ?? "free-tools")
@@ -905,6 +1054,7 @@ private struct SessionBar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            ScrollView(.horizontal) {
             HStack(spacing: 16) {
                 Image(systemName: session.kind == .stopwatch ? "stopwatch" : "timer").foregroundStyle(Palette.accent)
                 VStack(alignment: .leading, spacing: 3) {
@@ -974,6 +1124,7 @@ private struct SessionBar: View {
                 Button("Стоп", action: editor.stopSession)
                     .accessibilityIdentifier("session-stop")
             }
+            }.scrollIndicators(.hidden)
             if editor.workspace?.sessionNeedsSave == true {
                 Text("Сессия на паузе: не удалось сохранить работу на Mac.")
                     .font(.system(size: 12)).foregroundStyle(.orange)

@@ -25,14 +25,18 @@ struct ProjectField: View {
     @Binding var selection: UUID?
 
     var body: some View {
-        Picker("Проект", selection: $selection) {
-            Text("Без проекта").tag(UUID?.none)
-            ForEach(projects) { project in
-                Text(project.title).tag(Optional(project.id))
-            }
+        PropertyRow(title: "Проект", icon: "folder") {
+            Menu {
+                Button("Без проекта") { selection = nil }
+                ForEach(projects) { project in
+                    Button(project.title) { selection = project.id }
+                }
+            } label: {
+                PropertyValue(title: projects.first { $0.id == selection }?.title ?? "Без проекта")
+            }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .accessibilityIdentifier("task-project")
+                .accessibilityValue(projects.first { $0.id == selection }?.title ?? "Без проекта")
         }
-        .pickerStyle(.menu).font(.system(size: 12))
-        .accessibilityIdentifier("task-project")
     }
 }
 
