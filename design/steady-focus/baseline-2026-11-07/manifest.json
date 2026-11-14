@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "accepted_on": "2026-11-07",
+  "status": "accepted-design-baseline",
+  "requirements": "docs/design/steady-focus-design-baseline.md",
+  "detailed_requirements": "docs/design/steady-focus-design-handoff.md",
+  "mvp": "docs/MVP.md",
+  "path_base": "manifest directory for files[].path; repository root for source and document paths",
+  "open_design": {
+    "project": "steady-focus-macos-design",
+    "conversation": "855851c3-66e8-4508-b787-327dc5b77c22"
+  },
+  "notes": [
+    "Accepted set contains A/B/C; no separate letter was selected.",
+    "Demo scenario/variant controls are not product requirements.",
+    "HTML is authoritative for visual state; screenshots are previews. Notch screenshot predates final task-footer Complete button addition; notch itself is unchanged.",
+    "deferred-progress-block.png records explicitly excluded MVP UI, not an accepted product screen."
+  ],
+  "files": [
+    {
+      "path": "focus-design-options.html",
+      "source": "design/steady-focus/focus-design-options.html",
+      "bytes": 144332,
+      "sha256": "e4f3f62eeed65281b36f836ccdcdc4cd4f08dd84ae2827cbd731a066c3ae55ac"
+    },
+    {
+      "path": "focus-user-flows.html",
+      "source": "design/steady-focus/focus-user-flows.html",
+      "bytes": 66684,
+      "sha256": "17d7102a7406fa0e807435d3df2c2a293eaf80a0757c8e3d9330cd5a95f5341d"
+    },
+    {
+      "path": "options-A.jpg",
+      "source": "design/steady-focus/options-A.jpg",
+      "bytes": 58629,
+      "sha256": "f1c73de548a488a270300d32dfeb4a38ba6078efd13348533bbe573ae48105f2"
+    },
+    {
+      "path": "options-B.jpg",
+      "source": "design/steady-focus/options-B.jpg",
+      "bytes": 50082,
+      "sha256": "e8e4004990f4db90226b32903e050a9f043a825d8448bae0e52361c67229ec6e"
+    },
+    {
+      "path": "options-C.jpg",
+      "source": "design/steady-focus/options-C.jpg",
+      "bytes": 45733,
+      "sha256": "e005ac185bd5885eecaef06c7925bf04496e75ab1137d118ad233fcc19352258"
+    },
+    {
+      "path": "options-calendar.jpg",
+      "source": "design/steady-focus/options-calendar.jpg",
+      "bytes": 64376,
+      "sha256": "8ee788e30064bf44e1bc3142ff395211e12bcf9e09866eacd5455eee38587c92"
+    },
+    {
+      "path": "options-notch.jpg",
+      "source": "design/steady-focus/options-notch.jpg",
+      "bytes": 73135,
+      "sha256": "0959a048bf041fd4a409f6a5b81c75a84ea6ea1b1b530470f5502666700a0857"
+    },
+    {
+      "path": "options-flow.jpg",
+      "source": "design/steady-focus/options-flow.jpg",
+      "bytes": 45810,
+      "sha256": "32acf5e8f034bb39bdd23d01a82f7caf9c1ed75da666d76c73ab0bdbdcdea808"
+    },
+    {
+      "path": "references/task-details-reference.png",
+      "source": "design/steady-focus/references/task-details-reference.png",
+      "bytes": 95597,
+      "sha256": "f8bc5f43afd3326ace21ab65b7c5955f6ae4d2a80c4f2b96f36aeffc1f6f56fa"
+    },
+    {
+      "path": "references/deferred-progress-block.png",
+      "source": "design/steady-focus/references/deferred-progress-block.png",
+      "bytes": 36510,
+      "sha256": "30ae7a4ac9a1ea11bc790c7f4ea2c2d36dd10f6e3c63307094b041cb18eb844f"
+    }
+  ]
+}

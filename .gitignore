@@ -3,3 +3,5 @@
 **/.swiftpm/
 **/xcuserdata/
 .worktrees/
+/.codex/config.toml
+/.playwright-mcp/
