@@ -3,7 +3,7 @@ import Observation
 import SteadyCore
 
 enum TaskPeriod: Hashable {
-    case all, today, tomorrow, history
+    case all, today, tomorrow, week, history
 }
 
 /// Window editing state outlives its panels, including unsaved input after a disk error.
@@ -36,7 +36,7 @@ final class WorkspaceEditor {
 
     var contextDay: String? {
         switch period {
-        case .all, .history: nil
+        case .all, .week, .history: nil
         case .today: workspace?.today
         case .tomorrow: workspace?.tomorrow
         }
@@ -429,6 +429,27 @@ final class WorkspaceEditor {
         projectError = nil
         titleError = nil
         priorityError = nil
+    }
+
+    func toggleSkipped(_ task: TaskRecord) {
+        do {
+            try workspace?.setSkipped(occurrenceID: task.occurrenceID, skipped: task.skippedAt == nil)
+            actionError = nil
+        } catch { actionError = error.localizedDescription }
+    }
+
+    func matchesPeriod(_ task: TaskRecord) -> Bool {
+        guard let workspace else { return false }
+        switch period {
+        case .all: return true
+        case .week: return workspace.currentWeekTasks.contains { $0.occurrenceID == task.occurrenceID }
+        case .history: return (task.periodEnd ?? task.plannedDay).map { $0 < workspace.today } ?? false
+        case .tomorrow: return task.plannedDay == workspace.tomorrow
+        case .today:
+            if task.completedAt != nil { return workspace.completedToday.contains { $0.occurrenceID == task.occurrenceID } }
+            if task.skippedAt != nil, let end = task.periodEnd, let start = task.seriesDay { return start <= workspace.today && workspace.today <= end }
+            return workspace.openToday.contains { $0.occurrenceID == task.occurrenceID }
+        }
     }
 
     func setCompleted(_ task: TaskRecord) {
