@@ -33,6 +33,7 @@ struct LabelField: View {
     @State private var query = ""
     @State private var color: ProjectColor?
     @State private var error: String?
+    @State private var renamingLabel: LabelRecord?
 
     private var summary: String {
         let titles = workspace.labels.filter { selection.contains($0.id) }.map(\.title)
@@ -59,17 +60,23 @@ struct LabelField: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
                         ForEach(workspace.labels.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) }) { label in
-                            Toggle(isOn: Binding(
-                                get: { selection.contains(label.id) },
-                                set: { chosen in
-                                    var ids = selection
-                                    if chosen { ids.insert(label.id) } else { ids.remove(label.id) }
-                                    selection = ids
+                            HStack {
+                                Toggle(isOn: Binding(
+                                    get: { selection.contains(label.id) },
+                                    set: { chosen in
+                                        var ids = selection
+                                        if chosen { ids.insert(label.id) } else { ids.remove(label.id) }
+                                        selection = ids
+                                    }
+                                )) {
+                                    HStack { ProjectMarker(color: label.color); Text(label.title) }
                                 }
-                            )) {
-                                HStack { ProjectMarker(color: label.color); Text(label.title) }
+                                .toggleStyle(.checkbox)
+                                Spacer()
+                                Button { renamingLabel = label } label: { Image(systemName: "pencil") }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Переименовать метку: \(label.title)")
                             }
-                            .toggleStyle(.checkbox)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -86,6 +93,9 @@ struct LabelField: View {
                 Button("Готово") { visible = false }
             }
             .padding(18).frame(width: 280)
+            .sheet(item: $renamingLabel) { label in
+                LabelEditorPanel(workspace: workspace, label: label)
+            }
         }
     }
 
