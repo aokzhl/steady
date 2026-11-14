@@ -339,8 +339,8 @@ struct WorkspaceView: View {
                 Text("Родитель выполнен · \(children.filter { $0.completedAt == nil }.count) подзадач открыто")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if editor.expandedParents.contains(task.occurrenceID) || task.completedAt != nil {
-                ForEach(children, id: \.occurrenceID) { child in plainTaskRow(child).padding(.leading, 28) }
+            if editor.expandedParents.contains(task.occurrenceID) {
+                ForEach(children.filter { editor.matchesContext($0) && editor.matchesPeriod($0) }, id: \.occurrenceID) { child in plainTaskRow(child).padding(.leading, 28) }
             }
         }
     }
