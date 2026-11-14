@@ -36,6 +36,20 @@ public struct ProjectRecord: Identifiable, Equatable, Sendable {
     public let color: ProjectColor?
 }
 
+/// Durable rich text is opaque to Core; the projection supports display and future search.
+/// The macOS editor encodes `rtf` using the standard RTF interchange format.
+public struct TaskNote: Equatable, Sendable {
+    public let rtf: Data
+    public let plainText: String
+
+    public init(rtf: Data = Data(), plainText: String = "") {
+        self.rtf = rtf
+        self.plainText = plainText
+    }
+
+    public static let empty = TaskNote()
+}
+
 public struct TaskRecord: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let occurrenceID: UUID
@@ -45,6 +59,7 @@ public struct TaskRecord: Identifiable, Equatable, Sendable {
     public let completedAt: Date?
     public let priority: TaskPriority
     public let projectID: UUID?
+    public let note: TaskNote
 }
 
 public struct CreationDraft: Equatable, Sendable {
@@ -52,16 +67,18 @@ public struct CreationDraft: Equatable, Sendable {
     public let priority: TaskPriority
     public let projectID: UUID?
     public let projectWasChosen: Bool
+    public let note: TaskNote
 
-    public init(title: String = "", priority: TaskPriority = .none, projectID: UUID? = nil, projectWasChosen: Bool = false) {
+    public init(title: String = "", priority: TaskPriority = .none, projectID: UUID? = nil, projectWasChosen: Bool = false, note: TaskNote = .empty) {
         self.title = title
         self.priority = priority
         self.projectID = projectID
         self.projectWasChosen = projectWasChosen
+        self.note = note
     }
 
     public var isEmpty: Bool {
-        title.isEmpty && priority == .none && projectID == nil && !projectWasChosen
+        title.isEmpty && priority == .none && projectID == nil && !projectWasChosen && note == .empty
     }
 }
 
@@ -98,26 +115,26 @@ public final class TaskWorkspace {
     }
 
     @discardableResult
-    public func createTask(title: String, priority: TaskPriority = .none, projectID: UUID? = nil) throws -> TaskRecord {
-        try insertTask(title: title, priority: priority, projectID: projectID, consuming: nil)
+    public func createTask(title: String, priority: TaskPriority = .none, projectID: UUID? = nil, note: TaskNote = .empty) throws -> TaskRecord {
+        try insertTask(title: title, priority: priority, projectID: projectID, note: note, consuming: nil)
     }
 
     @discardableResult
     public func createTaskFromDraft() throws -> TaskRecord {
         guard let draft = creationDraft else { throw WorkspaceError.emptyTitle }
-        let task = try insertTask(title: draft.title, priority: draft.priority, projectID: draft.projectID, consuming: draft)
+        let task = try insertTask(title: draft.title, priority: draft.priority, projectID: draft.projectID, note: draft.note, consuming: draft)
         creationDraft = nil
         return task
     }
 
-    private func insertTask(title: String, priority: TaskPriority, projectID: UUID?, consuming draft: CreationDraft?) throws -> TaskRecord {
+    private func insertTask(title: String, priority: TaskPriority, projectID: UUID?, note: TaskNote, consuming draft: CreationDraft?) throws -> TaskRecord {
         let title = try validatedTitle(title)
         let createdAt = now()
         let context = DayContext(date: createdAt, calendar: calendar())
         let task = TaskRecord(
             id: UUID(), occurrenceID: UUID(), title: title,
             plannedDay: context.day,
-            timeZoneIdentifier: context.timeZone.identifier, completedAt: nil, priority: priority, projectID: projectID
+            timeZoneIdentifier: context.timeZone.identifier, completedAt: nil, priority: priority, projectID: projectID, note: note
         )
         tasks = try database.insert(task, createdAt: createdAt, consuming: draft)
         dayContext = context
@@ -156,6 +173,10 @@ public final class TaskWorkspace {
 
     public func openTaskCount(in projectID: UUID?) -> Int {
         tasks(in: projectID).filter { $0.completedAt == nil }.count
+    }
+
+    public func setNote(id: UUID, note: TaskNote) throws {
+        tasks = try database.setNote(id: id, note: note)
     }
 
     public func saveCreationDraft(_ draft: CreationDraft) throws {
