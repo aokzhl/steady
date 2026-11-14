@@ -203,8 +203,7 @@ final class SQLiteDatabase {
             }
             guard (record.completedAt != nil) != completed else { return current }
             if completed, var session = try activeTimeToolSession(), session.occurrenceID == occurrenceID {
-                session.closeSegment(at: instant)
-                session.stoppedAt = max(session.startedAt, instant)
+                session.stop(at: instant)
                 try saveTimeToolSession(session)
             }
             let value: Value = completed ? .number(instant.timeIntervalSince1970) : .null
@@ -349,8 +348,7 @@ final class SQLiteDatabase {
                 let start = max(instant, session.segments.last?.endedAt ?? session.startedAt)
                 session.segments.append(WorkSegment(id: UUID(), startedAt: start, endedAt: nil))
             case .stop:
-                session.closeSegment(at: instant)
-                session.stoppedAt = max(instant, session.segments.last?.endedAt ?? session.startedAt)
+                session.stop(at: instant)
             }
             try saveTimeToolSession(session)
         }

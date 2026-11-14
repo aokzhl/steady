@@ -35,6 +35,11 @@ public struct TimeToolSession: Identifiable, Equatable, Sendable {
         segments.reduce(0) { $0 + $1.duration(at: instant) }
     }
 
+    mutating func stop(at instant: Date) {
+        closeSegment(at: instant)
+        stoppedAt = max(instant, segments.last?.endedAt ?? startedAt)
+    }
+
     mutating func closeSegment(at instant: Date) {
         guard let last = segments.indices.last, segments[last].endedAt == nil else { return }
         segments[last].endedAt = max(segments[last].startedAt, instant)

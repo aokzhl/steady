@@ -156,7 +156,7 @@ public final class TaskWorkspace {
 
     public func setCompleted(occurrenceID: UUID, completed: Bool) throws {
         let instant = now()
-        try persistSessionCommand {
+        try persistSessionCommand(at: instant) {
             tasks = try database.setCompleted(occurrenceID: occurrenceID, completed: completed, at: instant)
         }
         dayContext = DayContext(date: instant, calendar: calendar())
@@ -277,15 +277,18 @@ public final class TaskWorkspace {
     }
 
     public func pauseSession() throws {
-        try persistSessionCommand { try database.changeSession(.pause, at: now()) }
+        let instant = now()
+        try persistSessionCommand(at: instant) { try database.changeSession(.pause, at: instant) }
     }
 
     public func resumeSession() throws {
-        try persistSessionCommand { try database.changeSession(.resume, at: now()) }
+        let instant = now()
+        try persistSessionCommand(at: instant) { try database.changeSession(.resume, at: instant) }
     }
 
     public func stopSession() throws {
-        try persistSessionCommand { try database.changeSession(.stop, at: now()) }
+        let instant = now()
+        try persistSessionCommand(at: instant) { try database.changeSession(.stop, at: instant) }
     }
 
     public func retrySessionSave() throws {
@@ -296,14 +299,14 @@ public final class TaskWorkspace {
         try loadTimeTools()
     }
 
-    private func persistSessionCommand(_ command: () throws -> Void) throws {
+    private func persistSessionCommand(at instant: Date, _ command: () throws -> Void) throws {
         do {
             try retrySessionSave()
             try command()
             try loadTimeTools()
         } catch {
             if let failure = error as? WorkspaceError, case .storage = failure, var frozen = activeSession {
-                frozen.closeSegment(at: now())
+                frozen.closeSegment(at: instant)
                 activeSession = frozen
                 pendingPausedSession = frozen
             }

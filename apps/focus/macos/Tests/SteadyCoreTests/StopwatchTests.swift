@@ -75,6 +75,34 @@ struct StopwatchTests {
         #expect(workspace.timeToolResults.count == 1)
     }
 
+    @Test(arguments: [false, true])
+    func stoppingAndCompletingOwnerKeepRunBoundsConsistentAfterClockMovesBackward(completeOwner: Bool) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        var instant = Date(timeIntervalSince1970: 1000)
+        let workspace = try TaskWorkspace(databaseURL: url, now: { instant })
+        let owner = try workspace.createTask(title: "Владелец")
+        try workspace.startStopwatch(occurrenceID: owner.occurrenceID)
+        instant = Date(timeIntervalSince1970: 1100)
+        try workspace.pauseSession()
+        instant = Date(timeIntervalSince1970: 1200)
+        try workspace.resumeSession()
+        instant = Date(timeIntervalSince1970: 1150)
+        if completeOwner {
+            try workspace.setCompleted(occurrenceID: owner.occurrenceID, completed: true)
+        } else {
+            try workspace.stopSession()
+        }
+        let reopened = try TaskWorkspace(databaseURL: url)
+        let result = try #require(reopened.timeToolResults.first)
+        #expect(result.stoppedAt == Date(timeIntervalSince1970: 1200))
+        #expect(result.segments.last?.endedAt == Date(timeIntervalSince1970: 1200))
+        #expect(result.durationSeconds == 100)
+        #expect(reopened.activeSession == nil)
+        #expect(reopened.tasks.first?.completedAt == (completeOwner ? instant : nil))
+    }
+
     @Test
     func freeRunsOfTenAndFifteenMinutesHaveDistinctPersistentResults() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -125,6 +153,40 @@ struct StopwatchTests {
         #expect(reopened.timeToolResults.first?.durationSeconds == 90)
         #expect(reopened.tasks.first?.completedAt == instant)
         #expect(reopened.timeToolResults.count == 1)
+    }
+
+    @Test
+    func failedCommandFreezesAtItsInstantEvenWhenTheClockAdvancesDuringFailure() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let moved = directory.appendingPathExtension("moved")
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: moved)
+        }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        var instant = Date(timeIntervalSince1970: 1_800_000_000)
+        var advanceClock = false
+        let workspace = try TaskWorkspace(databaseURL: url, now: {
+            let commandInstant = instant
+            if advanceClock { instant += 600 }
+            return commandInstant
+        })
+        try workspace.startStopwatch()
+        instant += 90
+        try FileManager.default.moveItem(at: directory, to: moved)
+        try Data().write(to: directory)
+        advanceClock = true
+        #expect(throws: (any Error).self) { try workspace.stopSession() }
+        advanceClock = false
+        #expect(workspace.sessionNeedsSave)
+        #expect(workspace.activeSession?.isPaused == true)
+        #expect(workspace.elapsedSeconds == 90)
+        try FileManager.default.removeItem(at: directory)
+        try FileManager.default.moveItem(at: moved, to: directory)
+        try workspace.retrySessionSave()
+        try workspace.stopSession()
+        let reopened = try TaskWorkspace(databaseURL: url)
+        #expect(reopened.timeToolResults.first?.durationSeconds == 90)
     }
 
     @Test

@@ -304,6 +304,22 @@ final class WorkspaceEditor {
         } catch { actionError = error.localizedDescription }
     }
 
+    var activeSessionOwner: TaskRecord? {
+        guard let occurrenceID = workspace?.activeSession?.occurrenceID else { return nil }
+        return workspace?.tasks.first { $0.occurrenceID == occurrenceID }
+    }
+
+    func showActiveSessionOwner() {
+        guard let owner = activeSessionOwner, saveDetails() else { return }
+        if isCreating {
+            guard saveDraft() else { return }
+            isCreating = false
+        }
+        let saved = workspace?.tasks.first { $0.id == owner.id } ?? owner
+        selectedProjectID = saved.projectID
+        showDetails(for: saved)
+    }
+
     func startStopwatch(_ task: TaskRecord? = nil) {
         performTimeToolAction { try workspace?.startStopwatch(occurrenceID: task?.occurrenceID) }
     }

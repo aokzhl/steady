@@ -526,6 +526,9 @@ private struct ToolMenu: View {
             if editor.workspace?.activeSession != nil {
                 Divider()
                 Text("Сначала остановите текущую сессию (в том числе на паузе)")
+                if editor.activeSessionOwner != nil {
+                    Button("К текущей задаче", action: editor.showActiveSessionOwner)
+                }
             } else if task?.completedAt != nil {
                 Text("Верните задачу в невыполненные для нового запуска")
             }
@@ -562,6 +565,10 @@ private struct SessionBar: View {
                         .accessibilityLabel("Прошло активного времени")
                         .accessibilityValue(elapsed)
                         .accessibilityIdentifier("session-elapsed")
+                }
+                if editor.activeSessionOwner != nil {
+                    Button("К текущей задаче", action: editor.showActiveSessionOwner)
+                        .accessibilityIdentifier("session-owner")
                 }
                 Button(session.isPaused ? "Продолжить" : "Пауза", action: editor.toggleSessionPause)
                     .accessibilityIdentifier("session-pause")
