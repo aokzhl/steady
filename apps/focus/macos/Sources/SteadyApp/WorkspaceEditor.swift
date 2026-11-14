@@ -1,0 +1,192 @@
+import AppKit
+import Observation
+import SteadyCore
+
+/// Window editing state outlives its panels, including unsaved input after a disk error.
+@MainActor
+@Observable
+final class WorkspaceEditor {
+    @ObservationIgnored var reopenWindow: (() -> Void)?
+    var workspace: TaskWorkspace?
+    var openingError: String?
+    var actionError: String?
+    var draftError: String?
+    var detailError: String?
+    var draftTitle = ""
+    var draftPriority: TaskPriority = .none
+    var detailTitle = ""
+    var detailPriority: TaskPriority = .none
+    var isCreating = false
+    var detailsVisible = false
+    var selectedID: UUID?
+
+    var selectedTask: TaskRecord? {
+        workspace?.tasks.first { $0.occurrenceID == selectedID }
+    }
+
+    private var draft: CreationDraft { CreationDraft(title: draftTitle, priority: draftPriority) }
+
+    func openWorkspace() {
+        guard workspace == nil else { return }
+        do {
+            let base = ProcessInfo.processInfo.environment["STEADY_DATA_DIRECTORY"].map {
+                URL(fileURLWithPath: $0, isDirectory: true)
+            }
+            let opened = try TaskWorkspace(databaseURL: TaskWorkspace.guestDatabaseURL(in: base))
+            workspace = opened
+            draftTitle = opened.creationDraft?.title ?? ""
+            draftPriority = opened.creationDraft?.priority ?? .none
+            openingError = nil
+        } catch { openingError = error.localizedDescription }
+    }
+
+    func reload() {
+        do {
+            try workspace?.reload()
+            actionError = nil
+        } catch { actionError = error.localizedDescription }
+    }
+
+    func openCreation() {
+        guard saveDetails() else { return }
+        isCreating = true
+    }
+
+    func closeCreation() {
+        // A failed save remains in this model even when the panel is hidden.
+        _ = saveDraft()
+        isCreating = false
+    }
+
+    @discardableResult
+    func saveDraft() -> Bool {
+        guard let workspace else { return false }
+        do {
+            if draft != (workspace.creationDraft ?? CreationDraft()) {
+                try workspace.saveCreationDraft(draft)
+            }
+            draftError = nil
+            return true
+        } catch {
+            draftError = error.localizedDescription
+            return false
+        }
+    }
+
+    func discardDraft() {
+        do {
+            try workspace?.discardCreationDraft()
+            draftTitle = ""
+            draftPriority = .none
+            draftError = nil
+        } catch { draftError = error.localizedDescription }
+    }
+
+    func createTask() {
+        guard let workspace, saveDraft() else { return }
+        do {
+            let task = try workspace.createTaskFromDraft()
+            draftTitle = ""
+            draftPriority = .none
+            draftError = nil
+            isCreating = false
+            showDetails(for: task)
+        } catch { draftError = error.localizedDescription }
+    }
+
+    func selectTask(_ task: TaskRecord) {
+        guard saveDetails() else { return }
+        if isCreating { closeCreation() }
+        let saved = workspace?.tasks.first { $0.id == task.id } ?? task
+        showDetails(for: saved)
+    }
+
+    private func showDetails(for task: TaskRecord) {
+        selectedID = task.occurrenceID
+        detailTitle = task.title
+        detailPriority = task.priority
+        detailError = nil
+        detailsVisible = true
+    }
+
+    func closeDetails() {
+        if saveDetails() { detailsVisible = false }
+    }
+
+    @discardableResult
+    func saveTitle() -> Bool {
+        guard let task = selectedTask, detailTitle != task.title else { return true }
+        do {
+            try workspace?.renameTask(id: task.id, title: detailTitle)
+            detailTitle = selectedTask?.title ?? detailTitle
+            detailError = nil
+            return true
+        } catch {
+            detailError = error.localizedDescription
+            return false
+        }
+    }
+
+    func changePriority(_ priority: TaskPriority) {
+        detailPriority = priority
+        _ = savePriority()
+    }
+
+    private func savePriority() -> Bool {
+        guard let task = selectedTask, detailPriority != task.priority else { return true }
+        do {
+            try workspace?.setPriority(id: task.id, priority: detailPriority)
+            detailError = nil
+            return true
+        } catch {
+            detailError = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    func saveDetails() -> Bool {
+        guard saveTitle() else { return false }
+        return savePriority()
+    }
+
+    func cancelTitleEdit() {
+        detailTitle = selectedTask?.title ?? ""
+        if detailPriority == selectedTask?.priority { detailError = nil }
+    }
+
+    func discardDetailEdits() {
+        detailTitle = selectedTask?.title ?? ""
+        detailPriority = selectedTask?.priority ?? .none
+        detailError = nil
+    }
+
+    func setCompleted(_ task: TaskRecord) {
+        do {
+            try workspace?.setCompleted(occurrenceID: task.occurrenceID, completed: task.completedAt == nil)
+            actionError = nil
+        } catch { actionError = error.localizedDescription }
+    }
+
+    func prepareToTerminate() -> Bool {
+        while true {
+            let draftSaved = saveDraft()
+            let detailsSaved = saveDetails()
+            if draftSaved && detailsSaved { return true }
+            // No editable input exists when opening the database itself failed.
+            if workspace == nil { return true }
+            let alert = NSAlert()
+            alert.messageText = "Есть несохранённые изменения"
+            alert.informativeText = "Не удалось сохранить ввод на Mac. Можно повторить запись, вернуться в приложение или явно выйти без несохранённых изменений. Ранее сохранённые данные останутся."
+            alert.addButton(withTitle: "Повторить сохранение")
+            alert.addButton(withTitle: "Отмена")
+            alert.addButton(withTitle: "Выйти без сохранения")
+            NSApp.activate()
+            switch alert.runModal() {
+            case .alertFirstButtonReturn: continue
+            case .alertThirdButtonReturn: return true
+            default: return false
+            }
+        }
+    }
+}

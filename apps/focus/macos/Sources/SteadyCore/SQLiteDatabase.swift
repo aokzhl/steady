@@ -5,6 +5,7 @@ public enum WorkspaceError: Error, Equatable, LocalizedError {
     case emptyTitle
     case invalidTitle
     case occurrenceNotFound
+    case draftChanged
     case storage(String)
     case unsupportedSchema(Int)
 
@@ -16,6 +17,8 @@ public enum WorkspaceError: Error, Equatable, LocalizedError {
             "Название содержит недопустимый символ. Удалите его и повторите."
         case .occurrenceNotFound:
             "Задача больше недоступна. Обновите список и повторите."
+        case .draftChanged:
+            "Черновик изменился. Откройте создание заново и проверьте введённые данные."
         case .storage:
             "Не удалось прочитать или сохранить локальные данные. Проверьте доступ к папке данных и повторите."
         case .unsupportedSchema:
@@ -47,8 +50,9 @@ final class SQLiteDatabase {
                 guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
                 return Int(sqlite3_column_int(query, 0))
             }
-            guard version <= 1 else { throw WorkspaceError.unsupportedSchema(version) }
+            guard version <= 2 else { throw WorkspaceError.unsupportedSchema(version) }
             if version == 0 { try migrateToVersionOne() }
+            if version < 2 { try migrateToVersionTwo() }
         } catch {
             sqlite3_close(connection)
             connection = nil
@@ -60,7 +64,7 @@ final class SQLiteDatabase {
 
     func records() throws -> [TaskRecord] {
         try statement("""
-            SELECT t.id, o.id, t.title, o.planned_day, o.time_zone, o.completed_at
+            SELECT t.id, o.id, t.title, o.planned_day, o.time_zone, o.completed_at, t.priority
             FROM tasks t JOIN task_occurrences o ON o.task_id = t.id
             ORDER BY t.created_at, t.rowid
             """) { query in
@@ -68,14 +72,16 @@ final class SQLiteDatabase {
             var result = sqlite3_step(query)
             while result == SQLITE_ROW {
                 guard let id = UUID(uuidString: text(query, 0)),
-                      let occurrenceID = UUID(uuidString: text(query, 1)) else {
+                      let occurrenceID = UUID(uuidString: text(query, 1)),
+                      let priority = TaskPriority(rawValue: text(query, 6)) else {
                     throw WorkspaceError.storage("Invalid persisted identifier")
                 }
                 let completedAt = sqlite3_column_type(query, 5) == SQLITE_NULL
                     ? nil : Date(timeIntervalSince1970: sqlite3_column_double(query, 5))
                 records.append(TaskRecord(
                     id: id, occurrenceID: occurrenceID, title: text(query, 2),
-                    plannedDay: text(query, 3), timeZoneIdentifier: text(query, 4), completedAt: completedAt
+                    plannedDay: text(query, 3), timeZoneIdentifier: text(query, 4), completedAt: completedAt,
+                    priority: priority
                 ))
                 result = sqlite3_step(query)
             }
@@ -84,17 +90,20 @@ final class SQLiteDatabase {
         }
     }
 
-    func insert(_ record: TaskRecord, createdAt: Date) throws -> [TaskRecord] {
+    func insert(_ record: TaskRecord, createdAt: Date, consuming draft: CreationDraft?) throws -> [TaskRecord] {
         try transaction {
+            if let draft, try creationDraft() != draft { throw WorkspaceError.draftChanged }
             try execute(
-                "INSERT INTO tasks (id, title, created_at) VALUES (?, ?, ?)",
-                [.text(record.id.uuidString), .text(record.title), .number(createdAt.timeIntervalSince1970)]
+                "INSERT INTO tasks (id, title, created_at, priority) VALUES (?, ?, ?, ?)",
+                [.text(record.id.uuidString), .text(record.title), .number(createdAt.timeIntervalSince1970),
+                 .text(record.priority.rawValue)]
             )
             try execute(
                 "INSERT INTO task_occurrences (id, task_id, planned_day, time_zone) VALUES (?, ?, ?, ?)",
                 [.text(record.occurrenceID.uuidString), .text(record.id.uuidString),
                  .text(record.plannedDay), .text(record.timeZoneIdentifier)]
             )
+            if draft != nil { try execute("DELETE FROM creation_draft") }
             return try records()
         }
     }
@@ -109,6 +118,64 @@ final class SQLiteDatabase {
             let value: Value = completed ? .number(instant.timeIntervalSince1970) : .null
             try execute("UPDATE task_occurrences SET completed_at = ? WHERE id = ?", [value, .text(occurrenceID.uuidString)])
             return try records()
+        }
+    }
+
+    func renameTask(id: UUID, title: String) throws -> [TaskRecord] {
+        try transaction {
+            guard try records().contains(where: { $0.id == id }) else {
+                throw WorkspaceError.occurrenceNotFound
+            }
+            try execute("UPDATE tasks SET title = ? WHERE id = ?", [.text(title), .text(id.uuidString)])
+            return try records()
+        }
+    }
+
+    func setPriority(id: UUID, priority: TaskPriority) throws -> [TaskRecord] {
+        try transaction {
+            guard try records().contains(where: { $0.id == id }) else {
+                throw WorkspaceError.occurrenceNotFound
+            }
+            try execute("UPDATE tasks SET priority = ? WHERE id = ?", [.text(priority.rawValue), .text(id.uuidString)])
+            return try records()
+        }
+    }
+
+    private func migrateToVersionTwo() throws {
+        try transaction {
+            try execute("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'none' CHECK(priority IN ('none','highest','high','medium','low','lowest'))")
+            try execute("""
+                CREATE TABLE creation_draft (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    title TEXT NOT NULL,
+                    priority TEXT NOT NULL CHECK(priority IN ('none','highest','high','medium','low','lowest'))
+                )
+                """)
+            try execute("PRAGMA user_version = 2")
+        }
+    }
+
+    func creationDraft() throws -> CreationDraft? {
+        try statement("SELECT title, priority FROM creation_draft WHERE id = 1") { query in
+            let result = sqlite3_step(query)
+            if result == SQLITE_DONE { return nil }
+            guard result == SQLITE_ROW, let priority = TaskPriority(rawValue: text(query, 1)) else {
+                throw failure()
+            }
+            return CreationDraft(title: text(query, 0), priority: priority)
+        }
+    }
+
+    func saveCreationDraft(_ draft: CreationDraft) throws {
+        try transaction {
+            if draft.title.isEmpty && draft.priority == .none {
+                try execute("DELETE FROM creation_draft")
+            } else {
+                try execute("""
+                    INSERT INTO creation_draft (id, title, priority) VALUES (1, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET title = excluded.title, priority = excluded.priority
+                    """, [.text(draft.title), .text(draft.priority.rawValue)])
+            }
         }
     }
 
@@ -170,7 +237,7 @@ final class SQLiteDatabase {
             case .text(let text):
                 // SQLITE_TRANSIENT copies the UTF-8 string before Swift releases it.
                 let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-                result = text.withCString { sqlite3_bind_text(prepared, index, $0, -1, transient) }
+                result = text.withCString { sqlite3_bind_text(prepared, index, $0, Int32(text.utf8.count), transient) }
             case .number(let number):
                 result = sqlite3_bind_double(prepared, index, number)
             case .null:
@@ -183,7 +250,8 @@ final class SQLiteDatabase {
 
     private func text(_ query: OpaquePointer, _ index: Int32) -> String {
         guard let value = sqlite3_column_text(query, index) else { return "" }
-        return String(cString: value)
+        let length = Int(sqlite3_column_bytes(query, index))
+        return String(decoding: UnsafeBufferPointer(start: value, count: length), as: UTF8.self)
     }
 
     private func failure() -> WorkspaceError {
