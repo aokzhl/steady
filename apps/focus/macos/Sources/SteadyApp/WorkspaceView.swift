@@ -138,11 +138,13 @@ struct WorkspaceView: View {
                 Label("Список", systemImage: "list.bullet")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
             }
-            Label("Сегодня", systemImage: "calendar")
-                .font(.system(size: 12, weight: .medium))
-                .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(Palette.accent.opacity(0.15), in: RoundedRectangle(cornerRadius: 6))
-                .foregroundStyle(Palette.accent)
+            Picker("Период", selection: Binding(get: { editor.period }, set: { editor.selectPeriod($0) })) {
+                Text("Все").tag(0)
+                Text("Сегодня").tag(1)
+                Text("Завтра").tag(2)
+            }
+            .pickerStyle(.segmented).frame(maxWidth: 300)
+
 
             if let openingError = editor.openingError {
                 StorageNotice(message: openingError)
@@ -165,27 +167,39 @@ struct WorkspaceView: View {
                 }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
-                        let open = workspace.openToday.filter { editor.selectedProjectID == nil || $0.projectID == editor.selectedProjectID }
-                        let completed = workspace.completedToday.filter { editor.selectedProjectID == nil || $0.projectID == editor.selectedProjectID }
+                        let open = workspace.tasks.filter {
+                            $0.completedAt == nil && (editor.selectedProjectID == nil || $0.projectID == editor.selectedProjectID)
+                            && (editor.contextDay == nil || $0.plannedDay == editor.contextDay || (editor.period == 1 && $0.plannedDay.map { $0 < workspace.today } == true))
+                        }
+                        let completed = workspace.tasks.filter {
+                            $0.completedAt != nil && (editor.selectedProjectID == nil || $0.projectID == editor.selectedProjectID)
+                            && (editor.contextDay == nil || (editor.period == 1 ? workspace.completedToday.contains($0) : $0.plannedDay == editor.contextDay))
+                        }
                         if open.isEmpty, completed.isEmpty {
                             emptyState
                         } else {
-                            if !open.isEmpty {
+                            let overdue = editor.period == 1 ? open.filter { $0.plannedDay.map { $0 < workspace.today } == true } : []
+                            if !overdue.isEmpty {
+                                sectionLabel("Ранее запланировано", count: overdue.count)
+                                ForEach(overdue) { taskRow($0) }
+                            }
+                            let current = open.filter { task in !overdue.contains { $0.id == task.id } }
+                            if !current.isEmpty {
                                 ForEach(workspace.projects) { project in
-                                    let group = open.filter { $0.projectID == project.id }
+                                    let group = current.filter { $0.projectID == project.id }
                                     if !group.isEmpty {
                                         sectionLabel(project.title, count: group.count)
                                         ForEach(group) { taskRow($0) }
                                     }
                                 }
-                                let unassigned = open.filter { $0.projectID == nil }
+                                let unassigned = current.filter { $0.projectID == nil }
                                 if !unassigned.isEmpty {
                                     sectionLabel("Без проекта", count: unassigned.count)
                                     ForEach(unassigned) { taskRow($0) }
                                 }
                             }
                             if !completed.isEmpty {
-                                sectionLabel("Выполнено сегодня", count: completed.count)
+                                sectionLabel(editor.period == 1 ? "Выполнено сегодня" : "Выполнено", count: completed.count)
                                     .padding(.top, 16)
                                 ForEach(completed) { taskRow($0) }
                             }
@@ -206,7 +220,7 @@ struct WorkspaceView: View {
     private var emptyState: some View {
         VStack(spacing: 12) {
             Image(systemName: "checklist").font(.system(size: 34, weight: .light)).foregroundStyle(Palette.accent)
-            Text(editor.workspace?.tasks.isEmpty == true ? "Задач пока нет" : "На сегодня всё")
+            Text(editor.workspace?.tasks.isEmpty == true ? "Задач пока нет" : "Нет задач за этот период")
                 .font(.system(size: 18, weight: .medium))
             Text("Добавьте дело, которым хотите заняться.")
                 .font(.system(size: 13)).foregroundStyle(.secondary)
@@ -252,7 +266,7 @@ struct WorkspaceView: View {
             .buttonStyle(.plain).help(task.title)
             .accessibilityIdentifier("select-\(task.id)")
 
-            Text(task.plannedDay == editor.workspace?.today ? "Сегодня" : task.plannedDay)
+            Text(dayLabel(task.plannedDay, today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow))
                 .font(.system(size: 11)).foregroundStyle(.secondary)
         }
         .padding(16)
@@ -295,7 +309,9 @@ private struct CreationPanel: View {
                     .accessibilityLabel("Название задачи").accessibilityIdentifier("task-title")
             }
             Divider()
-            TaskProperties(day: "Сегодня")
+            ScheduleField(day: Binding(get: { editor.draftDay }, set: {
+                editor.draftDay = $0; editor.draftDayWasChosen = true; editor.saveDraft()
+            }), today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow)
             ProjectField(projects: editor.workspace?.projects ?? [], selection: Binding(
                 get: { editor.draftProjectID },
                 set: { editor.draftProjectID = $0; editor.draftProjectWasChosen = true; editor.saveDraft() }
@@ -369,7 +385,8 @@ private struct DetailPanel: View {
                 }
                 .onExitCommand { editor.cancelTitleEdit(); titleFocused = false }
                 .accessibilityLabel("Изменить название").accessibilityIdentifier("detail-title")
-            TaskProperties(day: task.plannedDay == editor.workspace?.today ? "Сегодня" : task.plannedDay)
+            ScheduleField(day: Binding(get: { editor.detailDay }, set: { editor.changeDay($0) }),
+                          today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow)
             ProjectField(projects: editor.workspace?.projects ?? [], selection: Binding(
                 get: { editor.detailProjectID }, set: { editor.changeProject($0) }
             ))
@@ -410,15 +427,52 @@ private struct PriorityField: View {
     }
 }
 
-private struct TaskProperties: View {
-    let day: String
+private func dayLabel(_ day: String?, today: String?, tomorrow: String?) -> String {
+    guard let day else { return "Без даты" }
+    if day == today { return "Сегодня" }
+    if day == tomorrow { return "Завтра" }
+    return day
+}
+
+private struct ScheduleField: View {
+    @Binding var day: String?
+    let today: String?
+    let tomorrow: String?
+    @State private var choosingDate = false
+
+    private var formatter: DateFormatter {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }
 
     var body: some View {
-        VStack(spacing: 16) {
-            HStack {
-                Label("Расписание", systemImage: "calendar").foregroundStyle(.secondary)
-                Spacer()
-                Text(day)
+        HStack {
+            Label("Расписание", systemImage: "calendar").foregroundStyle(.secondary)
+            Spacer()
+            Menu(dayLabel(day, today: today, tomorrow: tomorrow)) {
+                Button("Сегодня") { day = today }
+                Button("Завтра") { day = tomorrow }
+                Button("Выбрать день…") {
+                    if day == nil { day = today }
+                    choosingDate = true
+                }
+                Divider()
+                Button("Без даты") { day = nil }
+            }
+            .accessibilityIdentifier("task-schedule")
+            .popover(isPresented: $choosingDate) {
+                VStack(alignment: .leading, spacing: 16) {
+                    DatePicker("День", selection: Binding(
+                        get: { day.flatMap { formatter.date(from: $0) } ?? Date() },
+                        set: { day = formatter.string(from: $0) }
+                    ), displayedComponents: .date)
+                    .datePickerStyle(.graphical)
+                    Button("Готово") { choosingDate = false }
+                }
+                .padding().frame(width: 280)
             }
         }
         .font(.system(size: 12))

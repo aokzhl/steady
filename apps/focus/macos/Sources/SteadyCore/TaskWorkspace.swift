@@ -54,7 +54,7 @@ public struct TaskRecord: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let occurrenceID: UUID
     public let title: String
-    public let plannedDay: String
+    public let plannedDay: String?
     public let timeZoneIdentifier: String
     public let completedAt: Date?
     public let priority: TaskPriority
@@ -67,18 +67,22 @@ public struct CreationDraft: Equatable, Sendable {
     public let priority: TaskPriority
     public let projectID: UUID?
     public let projectWasChosen: Bool
+    public let plannedDay: String?
+    public let dayWasChosen: Bool
     public let note: TaskNote
 
-    public init(title: String = "", priority: TaskPriority = .none, projectID: UUID? = nil, projectWasChosen: Bool = false, note: TaskNote = .empty) {
+    public init(title: String = "", priority: TaskPriority = .none, projectID: UUID? = nil, projectWasChosen: Bool = false, plannedDay: String? = nil, dayWasChosen: Bool = false, note: TaskNote = .empty) {
         self.title = title
         self.priority = priority
         self.projectID = projectID
         self.projectWasChosen = projectWasChosen
         self.note = note
+        self.plannedDay = plannedDay
+        self.dayWasChosen = dayWasChosen
     }
 
     public var isEmpty: Bool {
-        title.isEmpty && priority == .none && projectID == nil && !projectWasChosen && note == .empty
+        title.isEmpty && priority == .none && projectID == nil && !projectWasChosen && note == .empty && plannedDay == nil && !dayWasChosen
     }
 }
 
@@ -114,26 +118,28 @@ public final class TaskWorkspace {
         projects = try database.renameProject(id: id, title: validatedTitle(title))
     }
 
+    /// General creation is undated. A concrete day context passes its calendar date explicitly.
     @discardableResult
-    public func createTask(title: String, priority: TaskPriority = .none, projectID: UUID? = nil, note: TaskNote = .empty) throws -> TaskRecord {
-        try insertTask(title: title, priority: priority, projectID: projectID, note: note, consuming: nil)
+    public func createTask(title: String, priority: TaskPriority = .none, projectID: UUID? = nil, plannedDay: String? = nil, note: TaskNote = .empty) throws -> TaskRecord {
+        try insertTask(title: title, priority: priority, projectID: projectID, plannedDay: plannedDay, note: note, consuming: nil)
     }
 
     @discardableResult
     public func createTaskFromDraft() throws -> TaskRecord {
         guard let draft = creationDraft else { throw WorkspaceError.emptyTitle }
-        let task = try insertTask(title: draft.title, priority: draft.priority, projectID: draft.projectID, note: draft.note, consuming: draft)
+        let task = try insertTask(title: draft.title, priority: draft.priority, projectID: draft.projectID, plannedDay: draft.plannedDay, note: draft.note, consuming: draft)
         creationDraft = nil
         return task
     }
 
-    private func insertTask(title: String, priority: TaskPriority, projectID: UUID?, note: TaskNote, consuming draft: CreationDraft?) throws -> TaskRecord {
+    private func insertTask(title: String, priority: TaskPriority, projectID: UUID?, plannedDay: String?, note: TaskNote, consuming draft: CreationDraft?) throws -> TaskRecord {
         let title = try validatedTitle(title)
+        try validateDay(plannedDay)
         let createdAt = now()
         let context = DayContext(date: createdAt, calendar: calendar())
         let task = TaskRecord(
             id: UUID(), occurrenceID: UUID(), title: title,
-            plannedDay: context.day,
+            plannedDay: plannedDay,
             timeZoneIdentifier: context.timeZone.identifier, completedAt: nil, priority: priority, projectID: projectID, note: note
         )
         tasks = try database.insert(task, createdAt: createdAt, consuming: draft)
@@ -179,7 +185,23 @@ public final class TaskWorkspace {
         tasks = try database.setNote(id: id, note: note)
     }
 
+    /// Apply the current creation context while retaining explicit choices, including “Без даты”.
+    @discardableResult
+    public func prepareCreationDraft(projectID: UUID? = nil, plannedDay: String? = nil) throws -> CreationDraft {
+        let saved = creationDraft ?? CreationDraft()
+        let prepared = CreationDraft(
+            title: saved.title, priority: saved.priority,
+            projectID: creationDraft != nil ? saved.projectID : projectID,
+            projectWasChosen: saved.projectWasChosen,
+            plannedDay: saved.dayWasChosen ? saved.plannedDay : plannedDay,
+            dayWasChosen: saved.dayWasChosen, note: saved.note
+        )
+        try saveCreationDraft(prepared)
+        return prepared
+    }
+
     public func saveCreationDraft(_ draft: CreationDraft) throws {
+        try validateDay(draft.plannedDay)
         try database.saveCreationDraft(draft)
         creationDraft = draft.isEmpty ? nil : draft
     }
@@ -188,15 +210,41 @@ public final class TaskWorkspace {
         try saveCreationDraft(CreationDraft())
     }
 
-    public var today: String { dayContext.day }
+    public var today: String {
+        _ = dayContext
+        return DayContext(date: now(), calendar: calendar()).day
+    }
+
+    public var tomorrow: String {
+        _ = dayContext
+        let current = calendar()
+        return DayContext(date: current.date(byAdding: .day, value: 1, to: now())!, calendar: current).day
+    }
+
+    public func setPlannedDay(occurrenceID: UUID, day: String?) throws {
+        try validateDay(day)
+        tasks = try database.setPlannedDay(occurrenceID: occurrenceID, day: day, timeZone: calendar().timeZone.identifier)
+    }
+
+    private func validateDay(_ day: String?) throws {
+        guard let day else { return }
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        guard let date = formatter.date(from: day), formatter.string(from: date) == day else { throw WorkspaceError.invalidDay }
+    }
 
     public var openToday: [TaskRecord] {
-        let day = dayContext.day
-        return tasks.filter { $0.completedAt == nil && $0.plannedDay <= day }
+        let day = today
+        return tasks.filter { $0.completedAt == nil && $0.plannedDay.map { $0 <= day } == true }
     }
 
     public var completedToday: [TaskRecord] {
-        let context = dayContext
+        _ = dayContext
+        let context = DayContext(date: now(), calendar: calendar())
         return tasks.filter { $0.completedAt.map(context.contains) ?? false }
     }
 

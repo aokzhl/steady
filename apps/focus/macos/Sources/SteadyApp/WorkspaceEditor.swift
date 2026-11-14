@@ -15,13 +15,20 @@ final class WorkspaceEditor {
     private var priorityError: String?
     private var projectError: String?
     private var noteError: String?
+    private var dayError: String?
+    var period = 1
+    var draftDay: String?
+    var draftDayWasChosen = false
+    var detailDay: String?
+
+    var contextDay: String? { period == 1 ? workspace?.today : period == 2 ? workspace?.tomorrow : nil }
     var selectedProjectID: UUID?
     var draftProjectID: UUID?
     var draftProjectWasChosen = false
     var detailProjectID: UUID?
 
     var detailError: String? {
-        let messages = [titleError, priorityError, projectError, noteError].compactMap { $0 }
+        let messages = [titleError, priorityError, projectError, noteError, dayError].compactMap { $0 }
         return messages.isEmpty ? nil : messages.joined(separator: "\n")
     }
     var draftNote: TaskNote = .empty
@@ -38,7 +45,7 @@ final class WorkspaceEditor {
         workspace?.tasks.first { $0.occurrenceID == selectedID }
     }
 
-    private var draft: CreationDraft { CreationDraft(title: draftTitle, priority: draftPriority, projectID: draftProjectID, projectWasChosen: draftProjectWasChosen, note: draftNote) }
+    private var draft: CreationDraft { CreationDraft(title: draftTitle, priority: draftPriority, projectID: draftProjectID, projectWasChosen: draftProjectWasChosen, plannedDay: draftDay, dayWasChosen: draftDayWasChosen, note: draftNote) }
 
     func openWorkspace() {
         guard workspace == nil else { return }
@@ -53,6 +60,8 @@ final class WorkspaceEditor {
             draftNote = opened.creationDraft?.note ?? .empty
             draftProjectID = opened.creationDraft?.projectID
             draftProjectWasChosen = opened.creationDraft?.projectWasChosen ?? false
+            draftDay = opened.creationDraft?.plannedDay
+            draftDayWasChosen = opened.creationDraft?.dayWasChosen ?? false
             openingError = nil
         } catch { openingError = error.localizedDescription }
     }
@@ -66,10 +75,13 @@ final class WorkspaceEditor {
 
     func openCreation() {
         guard saveDetails() else { return }
-        if workspace?.creationDraft == nil && draft.isEmpty {
-            draftProjectID = selectedProjectID
-            _ = saveDraft()
-        }
+        guard let workspace, saveDraft() else { isCreating = true; return }
+        do {
+            let prepared = try workspace.prepareCreationDraft(projectID: selectedProjectID, plannedDay: contextDay)
+            draftProjectID = prepared.projectID
+            draftDay = prepared.plannedDay
+            draftError = nil
+        } catch { draftError = error.localizedDescription }
         isCreating = true
     }
 
@@ -102,6 +114,8 @@ final class WorkspaceEditor {
             draftNote = .empty
             draftProjectID = nil
             draftProjectWasChosen = false
+            draftDay = nil
+            draftDayWasChosen = false
             draftError = nil
         } catch { draftError = error.localizedDescription }
     }
@@ -115,6 +129,8 @@ final class WorkspaceEditor {
             draftNote = .empty
             draftProjectID = nil
             draftProjectWasChosen = false
+            draftDay = nil
+            draftDayWasChosen = false
             draftError = nil
             isCreating = false
             showDetails(for: task)
@@ -135,6 +151,8 @@ final class WorkspaceEditor {
         detailNote = task.note
         noteError = nil
         detailProjectID = task.projectID
+        detailDay = task.plannedDay
+        dayError = nil
         projectError = nil
         titleError = nil
         priorityError = nil
@@ -197,7 +215,8 @@ final class WorkspaceEditor {
         guard saveTitle() else { return false }
         guard savePriority() else { return false }
         guard saveProject() else { return false }
-        return saveNote()
+        guard saveNote() else { return false }
+        return saveDay()
     }
 
     func selectProject(_ id: UUID?) {
@@ -225,6 +244,31 @@ final class WorkspaceEditor {
         }
     }
 
+    func changeDay(_ day: String?) {
+        detailDay = day
+        _ = saveDay()
+    }
+
+    private func saveDay() -> Bool {
+        guard let task = selectedTask else { return true }
+        guard detailDay != task.plannedDay else { dayError = nil; return true }
+        do {
+            try workspace?.setPlannedDay(occurrenceID: task.occurrenceID, day: detailDay)
+            dayError = nil
+            return true
+        } catch {
+            dayError = error.localizedDescription
+            return false
+        }
+    }
+
+    func selectPeriod(_ value: Int) {
+        guard saveDetails() else { return }
+        if isCreating { closeCreation() }
+        period = value
+        detailsVisible = false
+    }
+
     func cancelTitleEdit() {
         detailTitle = selectedTask?.title ?? ""
         titleError = nil
@@ -236,6 +280,8 @@ final class WorkspaceEditor {
         detailNote = selectedTask?.note ?? .empty
         noteError = nil
         detailProjectID = selectedTask?.projectID
+        detailDay = selectedTask?.plannedDay
+        dayError = nil
         projectError = nil
         titleError = nil
         priorityError = nil

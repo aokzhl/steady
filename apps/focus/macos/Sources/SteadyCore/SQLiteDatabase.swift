@@ -2,6 +2,7 @@ import CSQLite
 import Foundation
 
 public enum WorkspaceError: Error, Equatable, LocalizedError {
+    case invalidDay
     case emptyTitle
     case invalidTitle
     case projectNotFound
@@ -12,6 +13,8 @@ public enum WorkspaceError: Error, Equatable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
+        case .invalidDay:
+            "Выберите существующую календарную дату."
         case .emptyTitle:
             "Введите название задачи."
         case .invalidTitle:
@@ -53,11 +56,12 @@ final class SQLiteDatabase {
                 guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
                 return Int(sqlite3_column_int(query, 0))
             }
-            guard version <= 4 else { throw WorkspaceError.unsupportedSchema(version) }
+            guard version <= 5 else { throw WorkspaceError.unsupportedSchema(version) }
             if version == 0 { try migrateToVersionOne() }
             if version < 2 { try migrateToVersionTwo() }
             if version < 3 { try migrateToVersionThree() }
             if version < 4 { try migrateToVersionFour() }
+            if version < 5 { try migrateToVersionFive() }
         } catch {
             sqlite3_close(connection)
             connection = nil
@@ -66,6 +70,26 @@ final class SQLiteDatabase {
     }
 
     deinit { sqlite3_close(connection) }
+
+    private func migrateToVersionFive() throws {
+        try transaction {
+            try execute("CREATE TABLE task_occurrences_v5 (id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id), planned_day TEXT, time_zone TEXT NOT NULL, completed_at REAL)")
+            try execute("INSERT INTO task_occurrences_v5 SELECT id, task_id, planned_day, time_zone, completed_at FROM task_occurrences")
+            try execute("DROP TABLE task_occurrences")
+            try execute("ALTER TABLE task_occurrences_v5 RENAME TO task_occurrences")
+            try execute("ALTER TABLE creation_draft ADD COLUMN planned_day TEXT")
+            try execute("ALTER TABLE creation_draft ADD COLUMN day_was_chosen INTEGER NOT NULL DEFAULT 0 CHECK(day_was_chosen IN (0, 1))")
+            try execute("PRAGMA user_version = 5")
+        }
+    }
+
+    func setPlannedDay(occurrenceID: UUID, day: String?, timeZone: String) throws -> [TaskRecord] {
+        try transaction {
+            guard try records().contains(where: { $0.occurrenceID == occurrenceID }) else { throw WorkspaceError.occurrenceNotFound }
+            try execute("UPDATE task_occurrences SET planned_day = ?, time_zone = ? WHERE id = ?", [day.map { .text($0) } ?? .null, .text(timeZone), .text(occurrenceID.uuidString)])
+            return try records()
+        }
+    }
 
     private func migrateToVersionThree() throws {
         try transaction {
@@ -134,7 +158,7 @@ final class SQLiteDatabase {
                     ? nil : Date(timeIntervalSince1970: sqlite3_column_double(query, 5))
                 records.append(TaskRecord(
                     id: id, occurrenceID: occurrenceID, title: text(query, 2),
-                    plannedDay: text(query, 3), timeZoneIdentifier: text(query, 4), completedAt: completedAt,
+                    plannedDay: sqlite3_column_type(query, 3) == SQLITE_NULL ? nil : text(query, 3), timeZoneIdentifier: text(query, 4), completedAt: completedAt,
                     priority: priority, projectID: UUID(uuidString: text(query, 7)),
                     note: TaskNote(rtf: blob(query, 8), plainText: text(query, 9))
                 ))
@@ -157,7 +181,7 @@ final class SQLiteDatabase {
             try execute(
                 "INSERT INTO task_occurrences (id, task_id, planned_day, time_zone) VALUES (?, ?, ?, ?)",
                 [.text(record.occurrenceID.uuidString), .text(record.id.uuidString),
-                 .text(record.plannedDay), .text(record.timeZoneIdentifier)]
+                 record.plannedDay.map { .text($0) } ?? .null, .text(record.timeZoneIdentifier)]
             )
             if draft != nil { try execute("DELETE FROM creation_draft") }
             return try records()
@@ -248,13 +272,13 @@ final class SQLiteDatabase {
     }
 
     func creationDraft() throws -> CreationDraft? {
-        try statement("SELECT title, priority, project_id, project_was_chosen, note_rtf, note_text FROM creation_draft WHERE id = 1") { query in
+        try statement("SELECT title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen FROM creation_draft WHERE id = 1") { query in
             let result = sqlite3_step(query)
             if result == SQLITE_DONE { return nil }
             guard result == SQLITE_ROW, let priority = TaskPriority(rawValue: text(query, 1)) else {
                 throw failure()
             }
-            return CreationDraft(title: text(query, 0), priority: priority, projectID: UUID(uuidString: text(query, 2)), projectWasChosen: sqlite3_column_int(query, 3) != 0, note: TaskNote(rtf: blob(query, 4), plainText: text(query, 5)))
+            return CreationDraft(title: text(query, 0), priority: priority, projectID: UUID(uuidString: text(query, 2)), projectWasChosen: sqlite3_column_int(query, 3) != 0, plannedDay: sqlite3_column_type(query, 6) == SQLITE_NULL ? nil : text(query, 6), dayWasChosen: sqlite3_column_int(query, 7) != 0, note: TaskNote(rtf: blob(query, 4), plainText: text(query, 5)))
         }
     }
 
@@ -265,9 +289,9 @@ final class SQLiteDatabase {
                 try execute("DELETE FROM creation_draft")
             } else {
                 try execute("""
-                    INSERT INTO creation_draft (id, title, priority, project_id, project_was_chosen, note_rtf, note_text) VALUES (1, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET title = excluded.title, priority = excluded.priority, project_id = excluded.project_id, project_was_chosen = excluded.project_was_chosen, note_rtf = excluded.note_rtf, note_text = excluded.note_text
-                    """, [.text(draft.title), .text(draft.priority.rawValue), draft.projectID.map { .text($0.uuidString) } ?? .null, .number(draft.projectWasChosen ? 1 : 0), .blob(draft.note.rtf), .text(draft.note.plainText)])
+                    INSERT INTO creation_draft (id, title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET title = excluded.title, priority = excluded.priority, project_id = excluded.project_id, project_was_chosen = excluded.project_was_chosen, note_rtf = excluded.note_rtf, note_text = excluded.note_text, planned_day = excluded.planned_day, day_was_chosen = excluded.day_was_chosen
+                    """, [.text(draft.title), .text(draft.priority.rawValue), draft.projectID.map { .text($0.uuidString) } ?? .null, .number(draft.projectWasChosen ? 1 : 0), .blob(draft.note.rtf), .text(draft.note.plainText), draft.plannedDay.map { .text($0) } ?? .null, .number(draft.dayWasChosen ? 1 : 0)])
             }
         }
     }
