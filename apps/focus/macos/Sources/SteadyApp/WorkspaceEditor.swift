@@ -11,7 +11,13 @@ final class WorkspaceEditor {
     var openingError: String?
     var actionError: String?
     var draftError: String?
-    var detailError: String?
+    private var titleError: String?
+    private var priorityError: String?
+
+    var detailError: String? {
+        let messages = [titleError, priorityError].compactMap { $0 }
+        return messages.isEmpty ? nil : messages.joined(separator: "\n")
+    }
     var draftTitle = ""
     var draftPriority: TaskPriority = .none
     var detailTitle = ""
@@ -105,7 +111,8 @@ final class WorkspaceEditor {
         selectedID = task.occurrenceID
         detailTitle = task.title
         detailPriority = task.priority
-        detailError = nil
+        titleError = nil
+        priorityError = nil
         detailsVisible = true
     }
 
@@ -115,14 +122,15 @@ final class WorkspaceEditor {
 
     @discardableResult
     func saveTitle() -> Bool {
-        guard let task = selectedTask, detailTitle != task.title else { return true }
+        guard let task = selectedTask else { return true }
+        guard detailTitle != task.title else { titleError = nil; return true }
         do {
             try workspace?.renameTask(id: task.id, title: detailTitle)
             detailTitle = selectedTask?.title ?? detailTitle
-            detailError = nil
+            titleError = nil
             return true
         } catch {
-            detailError = error.localizedDescription
+            titleError = error.localizedDescription
             return false
         }
     }
@@ -133,13 +141,14 @@ final class WorkspaceEditor {
     }
 
     private func savePriority() -> Bool {
-        guard let task = selectedTask, detailPriority != task.priority else { return true }
+        guard let task = selectedTask else { return true }
+        guard detailPriority != task.priority else { priorityError = nil; return true }
         do {
             try workspace?.setPriority(id: task.id, priority: detailPriority)
-            detailError = nil
+            priorityError = nil
             return true
         } catch {
-            detailError = error.localizedDescription
+            priorityError = error.localizedDescription
             return false
         }
     }
@@ -152,13 +161,14 @@ final class WorkspaceEditor {
 
     func cancelTitleEdit() {
         detailTitle = selectedTask?.title ?? ""
-        if detailPriority == selectedTask?.priority { detailError = nil }
+        titleError = nil
     }
 
     func discardDetailEdits() {
         detailTitle = selectedTask?.title ?? ""
         detailPriority = selectedTask?.priority ?? .none
-        detailError = nil
+        titleError = nil
+        priorityError = nil
     }
 
     func setCompleted(_ task: TaskRecord) {

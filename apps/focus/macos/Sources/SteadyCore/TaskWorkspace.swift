@@ -69,9 +69,7 @@ public final class TaskWorkspace {
     }
 
     private func insertTask(title: String, priority: TaskPriority, consuming draft: CreationDraft?) throws -> TaskRecord {
-        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { throw WorkspaceError.emptyTitle }
-        guard !title.contains("\0") else { throw WorkspaceError.invalidTitle }
+        let title = try validatedTitle(title)
         let createdAt = now()
         let context = DayContext(date: createdAt, calendar: calendar())
         let task = TaskRecord(
@@ -91,10 +89,15 @@ public final class TaskWorkspace {
     }
 
     public func renameTask(id: UUID, title: String) throws {
-        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = try validatedTitle(title)
+        tasks = try database.renameTask(id: id, title: title)
+    }
+
+    private func validatedTitle(_ input: String) throws -> String {
+        let title = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { throw WorkspaceError.emptyTitle }
         guard !title.contains("\0") else { throw WorkspaceError.invalidTitle }
-        tasks = try database.renameTask(id: id, title: title)
+        return title
     }
 
     public func setPriority(id: UUID, priority: TaskPriority) throws {
