@@ -329,7 +329,7 @@ public final class TaskWorkspace {
 
     public func setPlannedDay(occurrenceID: UUID, day: String?) throws {
         try validateDay(day)
-        tasks = try database.setPlannedDay(occurrenceID: occurrenceID, day: day, timeZone: calendar().timeZone.identifier)
+        tasks = try database.setPlannedDay(occurrenceID: occurrenceID, day: day, timeZone: calendar().timeZone.identifier, today: today)
     }
 
     private func validateDay(_ day: String?) throws {

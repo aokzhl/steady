@@ -146,6 +146,16 @@ final class SQLiteDatabase {
         }
     }
 
+    private func calendarDayFormatter() -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)!
+        formatter.calendar.timeZone = formatter.timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }
+
     /// Calendar dates are enumerated in UTC; local DST cannot skip or repeat a date.
     private func materialize(today: String, timeZone: String, through requested: String?) throws {
         // A prefetched future occurrence adopts the current zone when that period arrives.
@@ -163,13 +173,8 @@ final class SQLiteDatabase {
             guard result == SQLITE_DONE else { throw failure() }
             return ids
         }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
+        let formatter = calendarDayFormatter()
+        let calendar = formatter.calendar!
         for id in ids {
             let rules = try recurrenceRules(taskID: id)
             guard let start = rules.first?.day, var date = formatter.date(from: start) else { continue }
@@ -199,13 +204,8 @@ final class SQLiteDatabase {
             try insertRule(taskID: selected.id, day: effective, recurrence: recurrence)
             // Keep matching UUIDs, completed facts, and explicit individual moves.
             let candidates = try records().filter { $0.id == selected.id && (($0.seriesDay ?? $0.plannedDay ?? "") >= effective || $0.occurrenceID == occurrenceID) }
-            var calendar = Calendar(identifier: .gregorian)
-            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-            let formatter = DateFormatter()
-            formatter.calendar = calendar
-            formatter.timeZone = calendar.timeZone
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.dateFormat = "yyyy-MM-dd"
+            let formatter = calendarDayFormatter()
+            let calendar = formatter.calendar!
             for record in candidates {
                 let day = record.seriesDay ?? record.plannedDay ?? effective
                 let matches = recurrence.weekdays.contains(calendar.component(.weekday, from: formatter.date(from: day)!))
@@ -232,10 +232,22 @@ final class SQLiteDatabase {
         }
     }
 
-    func setPlannedDay(occurrenceID: UUID, day: String?, timeZone: String) throws -> [TaskRecord] {
+    func setPlannedDay(occurrenceID: UUID, day: String?, timeZone: String, today: String) throws -> [TaskRecord] {
         try transaction {
-            guard try records().contains(where: { $0.occurrenceID == occurrenceID }) else { throw WorkspaceError.occurrenceNotFound }
-            try execute("UPDATE task_occurrences SET planned_day = ?, time_zone = ?, individual_override = 1 WHERE id = ?", [day.map { .text($0) } ?? .null, .text(timeZone), .text(occurrenceID.uuidString)])
+            let historicalZone: String? = try statement("""
+                SELECT time_zone, calendar_frozen != 0 OR completed_at IS NOT NULL
+                    OR planned_day < ? OR series_day < ?
+                    OR EXISTS (SELECT 1 FROM time_tool_runs r WHERE r.occurrence_id = task_occurrences.id)
+                FROM task_occurrences WHERE id = ?
+                """, [.text(today), .text(today), .text(occurrenceID.uuidString)]) { query in
+                let result = sqlite3_step(query)
+                guard result == SQLITE_ROW else {
+                    if result == SQLITE_DONE { throw WorkspaceError.occurrenceNotFound }
+                    throw failure()
+                }
+                return sqlite3_column_int(query, 1) != 0 ? text(query, 0) : nil
+            }
+            try execute("UPDATE task_occurrences SET planned_day = ?, time_zone = ?, calendar_frozen = ?, individual_override = 1 WHERE id = ?", [day.map { .text($0) } ?? .null, .text(historicalZone ?? timeZone), .number(historicalZone == nil ? 0 : 1), .text(occurrenceID.uuidString)])
             return try records()
         }
     }

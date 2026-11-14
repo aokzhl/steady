@@ -234,4 +234,68 @@ struct RecurrenceTests {
         #expect(reopened.timeToolResults == workspace.timeToolResults)
     }
 
+    @Test func movingHistoricalOrWorkedOccurrencesKeepsTheirOriginalZoneAndUTCFacts() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        var instant = try Date("2026-11-14T12:00:00Z", strategy: .iso8601)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        let workspace = try TaskWorkspace(databaseURL: url, now: { instant }, calendar: { calendar })
+        _ = try workspace.createTask(title: "Серия", recurrence: .daily, seriesStart: "2026-11-12")
+        let occurrences = try workspace.occurrences(from: "2026-11-12", through: "2026-11-18")
+        let historical = try #require(occurrences.first { $0.plannedDay == "2026-11-12" })
+        let completed = try #require(occurrences.first { $0.plannedDay == "2026-11-16" })
+        let worked = try #require(occurrences.first { $0.plannedDay == "2026-11-17" })
+        let future = try #require(occurrences.first { $0.plannedDay == "2026-11-18" })
+        let oldOneOff = try workspace.createTask(title: "Вчера", plannedDay: "2026-11-13")
+        let currentOneOff = try workspace.createTask(title: "Сегодня", plannedDay: "2026-11-14")
+        try workspace.setCompleted(occurrenceID: completed.occurrenceID, completed: true)
+        let completedAt = try #require(workspace.tasks.first { $0.occurrenceID == completed.occurrenceID }?.completedAt)
+        try workspace.startStopwatch(occurrenceID: worked.occurrenceID)
+        instant = instant.addingTimeInterval(45)
+        try workspace.stopSession()
+        let result = try #require(workspace.timeToolResults.first)
+        calendar.timeZone = TimeZone(identifier: "Asia/Almaty")!
+        // Move before reload too: local mutations must enforce historical boundaries themselves.
+        for occurrence in [historical, completed, worked, oldOneOff] {
+            try workspace.setPlannedDay(occurrenceID: occurrence.occurrenceID, day: "2026-11-20")
+        }
+        // A subsequent future move must not unfreeze an established historical period.
+        try workspace.setPlannedDay(occurrenceID: oldOneOff.occurrenceID, day: "2026-11-21")
+        try workspace.setPlannedDay(occurrenceID: future.occurrenceID, day: "2026-11-22")
+        try workspace.setPlannedDay(occurrenceID: currentOneOff.occurrenceID, day: "2026-11-22")
+        let reopened = try TaskWorkspace(databaseURL: url, now: { instant }, calendar: { calendar })
+        for occurrence in [historical, completed, worked, oldOneOff] {
+            let saved = try #require(reopened.tasks.first { $0.occurrenceID == occurrence.occurrenceID })
+            #expect(saved.timeZoneIdentifier == "America/New_York")
+            #expect(saved.plannedDay == (occurrence.occurrenceID == oldOneOff.occurrenceID ? "2026-11-21" : "2026-11-20"))
+        }
+        #expect(reopened.tasks.first { $0.occurrenceID == future.occurrenceID }?.timeZoneIdentifier == "Asia/Almaty")
+        #expect(reopened.tasks.first { $0.occurrenceID == currentOneOff.occurrenceID }?.timeZoneIdentifier == "Asia/Almaty")
+        #expect(reopened.tasks.first { $0.occurrenceID == completed.occurrenceID }?.completedAt == completedAt)
+        #expect(reopened.timeToolResults == [result])
+        #expect(result.durationSeconds == 45)
+        #expect(result.segments.first?.startedAt == Date(timeIntervalSince1970: 1794657600))
+        #expect(result.segments.first?.endedAt == Date(timeIntervalSince1970: 1794657645))
+    }
+
+    @Test func anUnopenedCurrentPeriodAdoptsTheNewZoneWhenMovedBeforeReload() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        var instant = try Date("2026-11-14T12:00:00Z", strategy: .iso8601)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        let workspace = try TaskWorkspace(databaseURL: url, now: { instant }, calendar: { calendar })
+        let task = try workspace.createTask(title: "Завтра", recurrence: .daily, seriesStart: "2026-11-15")
+        instant = try Date("2026-11-15T12:00:00Z", strategy: .iso8601)
+        calendar.timeZone = TimeZone(identifier: "Asia/Almaty")!
+        try workspace.setPlannedDay(occurrenceID: task.occurrenceID, day: "2026-11-16")
+        let reopened = try TaskWorkspace(databaseURL: url, now: { instant }, calendar: { calendar })
+        let moved = try #require(reopened.tasks.first { $0.occurrenceID == task.occurrenceID })
+        #expect(moved.plannedDay == "2026-11-16")
+        #expect(moved.timeZoneIdentifier == "Asia/Almaty")
+    }
+
 }
