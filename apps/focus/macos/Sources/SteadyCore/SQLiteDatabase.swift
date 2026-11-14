@@ -2,6 +2,7 @@ import CSQLite
 import Foundation
 
 public enum WorkspaceError: Error, Equatable, LocalizedError {
+    case childInheritsParent
     case activeOwnerRequiresStop
     case outsideOccurrenceWeek
     case invalidRecurrence
@@ -25,6 +26,7 @@ public enum WorkspaceError: Error, Equatable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
+        case .childInheritsParent: "Один уровень подзадач. Проект и расписание — как у родителя; для своих создайте отдельную задачу."
         case .activeOwnerRequiresStop:
             "Сначала нажмите Stop, затем пропустите выполнение. Сессия на паузе тоже занимает активный инструмент."
         case .outsideOccurrenceWeek:
@@ -89,7 +91,7 @@ final class SQLiteDatabase {
                 guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
                 return Int(sqlite3_column_int(query, 0))
             }
-            guard version <= 11 else { throw WorkspaceError.unsupportedSchema(version) }
+            guard version <= 12 else { throw WorkspaceError.unsupportedSchema(version) }
             if version == 0 { try migrateToVersionOne() }
             if version < 2 { try migrateToVersionTwo() }
             if version < 3 { try migrateToVersionThree() }
@@ -101,6 +103,7 @@ final class SQLiteDatabase {
             if version < 9 { try migrateToVersionNine() }
             if version < 10 { try migrateToVersionTen() }
             if version < 11 { try migrateToVersionEleven() }
+            if version < 12 { try migrateToVersionTwelve() }
         } catch {
             sqlite3_close(connection)
             connection = nil
@@ -109,6 +112,45 @@ final class SQLiteDatabase {
     }
 
     deinit { sqlite3_close(connection) }
+
+    private func migrateToVersionTwelve() throws {
+        try transaction {
+            try execute("ALTER TABLE tasks ADD COLUMN parent_task_id TEXT REFERENCES tasks(id)")
+            try execute("ALTER TABLE task_occurrences ADD COLUMN parent_occurrence_id TEXT REFERENCES task_occurrences(id)")
+            try execute("CREATE UNIQUE INDEX child_parent_occurrence ON task_occurrences(task_id, parent_occurrence_id) WHERE parent_occurrence_id IS NOT NULL")
+            try execute("ALTER TABLE creation_draft ADD COLUMN children BLOB NOT NULL DEFAULT X'5B5D'")
+            try execute("PRAGMA user_version = 12")
+        }
+    }
+
+    private func materializeChildren() throws {
+        try statement("SELECT t.id, p.id, p.time_zone FROM tasks t JOIN task_occurrences p ON p.task_id = t.parent_task_id WHERE NOT EXISTS (SELECT 1 FROM task_occurrences c WHERE c.task_id = t.id AND c.parent_occurrence_id = p.id)") { query in
+            var result = sqlite3_step(query)
+            while result == SQLITE_ROW {
+                try execute("INSERT INTO task_occurrences (id, task_id, time_zone, parent_occurrence_id) VALUES (?, ?, ?, ?)", [.text(UUID().uuidString), .text(text(query, 0)), .text(text(query, 2)), .text(text(query, 1))])
+                result = sqlite3_step(query)
+            }
+            guard result == SQLITE_DONE else { throw failure() }
+        }
+    }
+
+    private func insertChild(_ child: SubtaskDraft, parentID: UUID, at instant: Date, restoringDraft: Bool = false) throws {
+        if !restoringDraft { try validateLabels(child.labelIDs) }
+        try execute("INSERT INTO tasks (id, title, created_at, priority, note_rtf, note_text, parent_task_id) VALUES (?, ?, ?, 'none', ?, ?, ?)", [.text(child.id.uuidString), .text(child.title.trimmingCharacters(in: .whitespacesAndNewlines)), .number(instant.timeIntervalSince1970), .blob(child.note.rtf), .text(child.note.plainText), .text(parentID.uuidString)])
+        for label in child.labelIDs {
+            try execute("INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)", [.text(child.id.uuidString), .text(label.uuidString)])
+        }
+    }
+
+    func addSubtask(parentOccurrenceID: UUID, child: SubtaskDraft, at instant: Date) throws -> [TaskRecord] {
+        try transaction {
+            guard let parent = try records().first(where: { $0.occurrenceID == parentOccurrenceID }) else { throw WorkspaceError.occurrenceNotFound }
+            guard parent.parentTaskID == nil else { throw WorkspaceError.childInheritsParent }
+            try insertChild(child, parentID: parent.id, at: instant)
+            try materializeChildren()
+            return try records()
+        }
+    }
 
     private func migrateToVersionTen() throws {
         try transaction {
@@ -170,6 +212,7 @@ final class SQLiteDatabase {
     func refreshOccurrences(today: String, timeZone: String, through: String? = nil) throws -> [TaskRecord] {
         try transaction {
             try materialize(today: today, timeZone: timeZone, through: through)
+            try materializeChildren()
             return try records()
         }
     }
@@ -238,6 +281,7 @@ final class SQLiteDatabase {
     func setRecurrence(occurrenceID: UUID, recurrence: TaskRecurrence, today: String, timeZone: String) throws -> [TaskRecord] {
         try transaction {
             guard let selected = try records().first(where: { $0.occurrenceID == occurrenceID }) else { throw WorkspaceError.occurrenceNotFound }
+            guard selected.parentTaskID == nil else { throw WorkspaceError.childInheritsParent }
             let effective = max(selected.seriesDay ?? selected.plannedDay ?? today, selected.seriesStart ?? "")
             try execute("DELETE FROM recurrence_rules WHERE task_id = ? AND effective_day >= ?", [.text(selected.id.uuidString), .text(effective)])
             try insertRule(taskID: selected.id, day: effective, recurrence: recurrence)
@@ -249,12 +293,21 @@ final class SQLiteDatabase {
                 let day = record.seriesDay ?? record.plannedDay ?? effective
                 let matches = recurrence == .weekly ? record.periodEnd != nil : (record.periodEnd == nil && recurrence.weekdays.contains(calendar.component(.weekday, from: formatter.date(from: day)!)))
                 if !matches {
+                    let children = try records().filter { $0.parentOccurrenceID == record.occurrenceID }
+                    let protectedChildren = try children.contains { child in
+                        if child.completedAt != nil || child.skippedAt != nil { return true }
+                        return try statement("SELECT 1 FROM time_tool_runs WHERE occurrence_id = ? LIMIT 1", [.text(child.occurrenceID.uuidString)]) { sqlite3_step($0) == SQLITE_ROW }
+                    }
+                    let protectedParent = try statement("SELECT 1 FROM task_occurrences o WHERE o.id = ? AND (o.completed_at IS NOT NULL OR o.individual_override = 1 OR EXISTS (SELECT 1 FROM time_tool_runs r WHERE r.occurrence_id = o.id))", [.text(record.occurrenceID.uuidString)]) { sqlite3_step($0) == SQLITE_ROW }
+                    if protectedChildren || protectedParent { continue }
+                    try execute("DELETE FROM task_occurrences WHERE parent_occurrence_id = ?", [.text(record.occurrenceID.uuidString)])
                     try execute("DELETE FROM task_occurrences WHERE id = ? AND completed_at IS NULL AND individual_override = 0 AND NOT EXISTS (SELECT 1 FROM time_tool_runs r WHERE r.occurrence_id = task_occurrences.id)", [.text(record.occurrenceID.uuidString)])
                 } else if record.seriesDay == nil {
                     try execute("UPDATE task_occurrences SET series_day = ?, planned_day = COALESCE(planned_day, ?) WHERE id = ?", [.text(day), .text(day), .text(record.occurrenceID.uuidString)])
                 }
             }
             try materialize(today: today, timeZone: timeZone, through: nil)
+            try materializeChildren()
             return try records()
         }
     }
@@ -274,6 +327,7 @@ final class SQLiteDatabase {
     func setPlannedDay(occurrenceID: UUID, day: String?, timeZone: String, today: String) throws -> [TaskRecord] {
         try transaction {
             guard let record = try records().first(where: { $0.occurrenceID == occurrenceID }) else { throw WorkspaceError.occurrenceNotFound }
+            guard record.parentTaskID == nil else { throw WorkspaceError.childInheritsParent }
             if let day, let end = record.periodEnd, let start = record.seriesDay, !(start...end).contains(day) {
                 throw WorkspaceError.outsideOccurrenceWeek
             }
@@ -454,7 +508,7 @@ final class SQLiteDatabase {
 
     func records() throws -> [TaskRecord] {
         try statement("""
-            SELECT t.id, o.id, t.title, o.planned_day, o.time_zone, o.completed_at, t.priority, t.project_id, t.note_rtf, t.note_text, o.series_day, o.period_end, o.skipped_at
+            SELECT t.id, o.id, t.title, o.planned_day, o.time_zone, o.completed_at, t.priority, t.project_id, t.note_rtf, t.note_text, o.series_day, o.period_end, o.skipped_at, t.parent_task_id, o.parent_occurrence_id
             FROM tasks t JOIN task_occurrences o ON o.task_id = t.id
             ORDER BY t.created_at, t.rowid, o.planned_day, o.rowid
             """) { query in
@@ -474,6 +528,8 @@ final class SQLiteDatabase {
                     priority: priority, projectID: UUID(uuidString: text(query, 7)),
                     note: TaskNote(rtf: blob(query, 8), plainText: text(query, 9)), labelIDs: try labelIDs(taskID: id)
                 )
+                record.parentTaskID = UUID(uuidString: text(query, 13))
+                record.parentOccurrenceID = UUID(uuidString: text(query, 14))
                 let rules = try recurrenceRules(taskID: id)
                 record.seriesStart = rules.first?.day
                 record.seriesDay = sqlite3_column_type(query, 10) == SQLITE_NULL ? nil : text(query, 10)
@@ -485,7 +541,15 @@ final class SQLiteDatabase {
                 result = sqlite3_step(query)
             }
             guard result == SQLITE_DONE else { throw failure() }
-            return records
+            let parents = Dictionary(uniqueKeysWithValues: records.filter { $0.parentTaskID == nil }.map { ($0.occurrenceID, $0) })
+            return records.map { child in
+                guard let parentID = child.parentOccurrenceID, let parent = parents[parentID] else { return child }
+                var inherited = TaskRecord(id: child.id, occurrenceID: child.occurrenceID, title: child.title, plannedDay: parent.plannedDay, timeZoneIdentifier: parent.timeZoneIdentifier, completedAt: child.completedAt, priority: child.priority, projectID: parent.projectID, note: child.note, labelIDs: child.labelIDs)
+                inherited.parentTaskID = parent.id; inherited.parentOccurrenceID = parentID
+                inherited.recurrence = parent.recurrence; inherited.seriesStart = parent.seriesStart
+                inherited.seriesDay = parent.seriesDay; inherited.periodEnd = parent.periodEnd; inherited.skippedAt = child.skippedAt
+                return inherited
+            }
         }
     }
 
@@ -512,6 +576,8 @@ final class SQLiteDatabase {
             for labelID in record.labelIDs {
                 try execute("INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)", [.text(record.id.uuidString), .text(labelID.uuidString)])
             }
+            for child in draft == nil ? [] : try rawDraftChildren() { try insertChild(child, parentID: record.id, at: createdAt, restoringDraft: true) }
+            try materializeChildren()
             if draft != nil { try execute("DELETE FROM creation_draft") }
             return try records()
         }
@@ -610,7 +676,8 @@ final class SQLiteDatabase {
     }
 
     func setProject(id: UUID, projectID: UUID?) throws -> [TaskRecord] {
-        try transaction {
+        guard try records().first(where: { $0.id == id })?.parentTaskID == nil else { throw WorkspaceError.childInheritsParent }
+        return try transaction {
             guard try records().contains(where: { $0.id == id }) else { throw WorkspaceError.occurrenceNotFound }
             try validateProject(projectID)
             try execute("UPDATE tasks SET project_id = ? WHERE id = ?", [projectID.map { .text($0.uuidString) } ?? .null, .text(id.uuidString)])
@@ -920,21 +987,47 @@ final class SQLiteDatabase {
         }
     }
 
+    private func rawDraftChildren() throws -> [SubtaskDraft] {
+        try statement("SELECT children FROM creation_draft WHERE id = 1") { query in
+            guard sqlite3_step(query) == SQLITE_ROW else { return [] }
+            return try JSONDecoder().decode([SubtaskDraft].self, from: blob(query, 0))
+        }
+    }
+
+    private func visibleDraftChildren(_ children: [SubtaskDraft]) throws -> [SubtaskDraft] {
+        let activeIDs = Set(try labels().map(\.id))
+        return children.map { child in
+            var visible = child
+            visible.labelIDs.formIntersection(activeIDs)
+            return visible
+        }
+    }
+
     func creationDraft() throws -> CreationDraft? {
-        try statement("SELECT title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen, recurrence, series_start, labels_were_chosen FROM creation_draft WHERE id = 1") { query in
+        try statement("SELECT title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen, recurrence, series_start, labels_were_chosen, children FROM creation_draft WHERE id = 1") { query in
             let result = sqlite3_step(query)
             if result == SQLITE_DONE { return nil }
             guard result == SQLITE_ROW, let priority = TaskPriority(rawValue: text(query, 1)) else {
                 throw failure()
             }
-            return CreationDraft(title: text(query, 0), priority: priority, projectID: UUID(uuidString: text(query, 2)), projectWasChosen: sqlite3_column_int(query, 3) != 0, plannedDay: sqlite3_column_type(query, 6) == SQLITE_NULL ? nil : text(query, 6), dayWasChosen: sqlite3_column_int(query, 7) != 0, note: TaskNote(rtf: blob(query, 4), plainText: text(query, 5)), labelIDs: try labelIDs(taskID: nil), labelsWereChosen: sqlite3_column_int(query, 10) != 0, recurrence: try decodeRecurrence(query, 8), seriesStart: sqlite3_column_type(query, 9) == SQLITE_NULL ? nil : text(query, 9))
+            return CreationDraft(title: text(query, 0), priority: priority, projectID: UUID(uuidString: text(query, 2)), projectWasChosen: sqlite3_column_int(query, 3) != 0, plannedDay: sqlite3_column_type(query, 6) == SQLITE_NULL ? nil : text(query, 6), dayWasChosen: sqlite3_column_int(query, 7) != 0, note: TaskNote(rtf: blob(query, 4), plainText: text(query, 5)), labelIDs: try labelIDs(taskID: nil), labelsWereChosen: sqlite3_column_int(query, 10) != 0, recurrence: try decodeRecurrence(query, 8), seriesStart: sqlite3_column_type(query, 9) == SQLITE_NULL ? nil : text(query, 9), children: try visibleDraftChildren(JSONDecoder().decode([SubtaskDraft].self, from: blob(query, 11))))
         }
     }
 
-    func saveCreationDraft(_ draft: CreationDraft, replacingLabels: Bool) throws {
+    func saveCreationDraft(_ draft: CreationDraft, replacingLabels: Bool, replacingChildLabels: Set<UUID>) throws {
         try transaction {
             try validateProject(draft.projectID)
             try validateLabels(draft.labelIDs)
+            let activeIDs = Set(try labels().map(\.id))
+            let priorChildren = try rawDraftChildren()
+            let persistedChildren = try draft.children.map { child in
+                try validateLabels(child.labelIDs)
+                var saved = child
+                if !replacingChildLabels.contains(child.id), let prior = priorChildren.first(where: { $0.id == child.id }), prior.labelIDs.intersection(activeIDs) == child.labelIDs {
+                    saved.labelIDs.formUnion(prior.labelIDs.subtracting(activeIDs))
+                }
+                return saved
+            }
             // Public drafts omit deleted labels; unchanged visible IDs must retain their
             // hidden associations unless the caller explicitly replaces the selection.
             let labelsChanged = try replacingLabels || draft.labelIDs != labelIDs(taskID: nil)
@@ -945,6 +1038,7 @@ final class SQLiteDatabase {
                     INSERT INTO creation_draft (id, title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen, labels_were_chosen, recurrence, series_start) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET title = excluded.title, priority = excluded.priority, project_id = excluded.project_id, project_was_chosen = excluded.project_was_chosen, note_rtf = excluded.note_rtf, note_text = excluded.note_text, planned_day = excluded.planned_day, day_was_chosen = excluded.day_was_chosen, labels_were_chosen = excluded.labels_were_chosen, recurrence = excluded.recurrence, series_start = excluded.series_start
                     """, [.text(draft.title), .text(draft.priority.rawValue), draft.projectID.map { .text($0.uuidString) } ?? .null, .number(draft.projectWasChosen ? 1 : 0), .blob(draft.note.rtf), .text(draft.note.plainText), draft.plannedDay.map { .text($0) } ?? .null, .number(draft.dayWasChosen ? 1 : 0), .number(draft.labelsWereChosen ? 1 : 0), try encodedRecurrence(draft.recurrence), draft.seriesStart.map { .text($0) } ?? .null])
+                try execute("UPDATE creation_draft SET children = ? WHERE id = 1", [.blob(try JSONEncoder().encode(persistedChildren))])
                 if labelsChanged {
                     try execute("DELETE FROM draft_labels WHERE draft_id = 1")
                     for labelID in draft.labelIDs {

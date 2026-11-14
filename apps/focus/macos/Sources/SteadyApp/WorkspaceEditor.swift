@@ -58,6 +58,10 @@ final class WorkspaceEditor {
     }
     var draftNote: TaskNote = .empty
     var detailNote: TaskNote = .empty
+    var draftChildLabelsNeedReplacement: Set<UUID> = []
+    var draftChildren: [SubtaskDraft] = []
+    var newChildTitle = ""
+    var expandedParents: Set<UUID> = []
     var draftTitle = ""
     var draftPriority: TaskPriority = .none
     var detailTitle = ""
@@ -70,7 +74,7 @@ final class WorkspaceEditor {
         workspace?.tasks.first { $0.occurrenceID == selectedID }
     }
 
-    private var draft: CreationDraft { CreationDraft(title: draftTitle, priority: draftPriority, projectID: draftProjectID, projectWasChosen: draftProjectWasChosen, plannedDay: draftDay, dayWasChosen: draftDayWasChosen, note: draftNote, labelIDs: draftLabelIDs, labelsWereChosen: draftLabelsWereChosen, recurrence: draftRecurrence, seriesStart: draftSeriesStart) }
+    private var draft: CreationDraft { CreationDraft(title: draftTitle, priority: draftPriority, projectID: draftProjectID, projectWasChosen: draftProjectWasChosen, plannedDay: draftDay, dayWasChosen: draftDayWasChosen, note: draftNote, labelIDs: draftLabelIDs, labelsWereChosen: draftLabelsWereChosen, recurrence: draftRecurrence, seriesStart: draftSeriesStart, children: draftChildren) }
 
     func openWorkspace() {
         guard workspace == nil else { return }
@@ -83,6 +87,7 @@ final class WorkspaceEditor {
             timerUpdates = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.updateTimer() }
             }
+            draftChildren = opened.creationDraft?.children ?? []
             draftTitle = opened.creationDraft?.title ?? ""
             draftPriority = opened.creationDraft?.priority ?? .none
             draftNote = opened.creationDraft?.note ?? .empty
@@ -130,9 +135,10 @@ final class WorkspaceEditor {
     func saveDraft() -> Bool {
         guard let workspace else { return false }
         do {
-            if draftLabelsNeedReplacement || draft != (workspace.creationDraft ?? CreationDraft()) {
-                try workspace.saveCreationDraft(draft, replacingLabels: draftLabelsNeedReplacement)
+            if draftLabelsNeedReplacement || !draftChildLabelsNeedReplacement.isEmpty || draft != (workspace.creationDraft ?? CreationDraft()) {
+                try workspace.saveCreationDraft(draft, replacingLabels: draftLabelsNeedReplacement, replacingChildLabels: draftChildLabelsNeedReplacement)
             }
+            draftChildLabelsNeedReplacement = []
             draftLabelsNeedReplacement = false
             draftError = nil
             return true
@@ -145,6 +151,7 @@ final class WorkspaceEditor {
     func discardDraft() {
         do {
             try workspace?.discardCreationDraft()
+            draftChildren = []
             draftTitle = ""
             draftPriority = .none
             draftNote = .empty
@@ -154,6 +161,7 @@ final class WorkspaceEditor {
             draftDayWasChosen = false
             draftLabelIDs = []
             draftLabelsWereChosen = false
+            draftChildLabelsNeedReplacement = []
             draftLabelsNeedReplacement = false
             draftRecurrence = nil
             draftSeriesStart = nil
@@ -165,6 +173,7 @@ final class WorkspaceEditor {
         guard let workspace, saveDraft() else { return }
         do {
             let task = try workspace.createTaskFromDraft()
+            draftChildren = []
             draftTitle = ""
             draftPriority = .none
             draftNote = .empty
@@ -174,6 +183,7 @@ final class WorkspaceEditor {
             draftDayWasChosen = false
             draftLabelIDs = []
             draftLabelsWereChosen = false
+            draftChildLabelsNeedReplacement = []
             draftLabelsNeedReplacement = false
             draftRecurrence = nil
             draftSeriesStart = nil
@@ -337,6 +347,7 @@ final class WorkspaceEditor {
     }
 
     private func synchronizeLabelSelection() {
+        draftChildren = workspace?.creationDraft?.children ?? []
         draftLabelIDs = workspace?.creationDraft?.labelIDs ?? []
         detailLabelIDs = selectedTask?.labelIDs ?? []
         labelsError = nil
@@ -450,6 +461,16 @@ final class WorkspaceEditor {
             if task.skippedAt != nil, let end = task.periodEnd, let start = task.seriesDay { return start <= workspace.today && workspace.today <= end }
             return workspace.openToday.contains { $0.occurrenceID == task.occurrenceID }
         }
+    }
+
+    func addChild() {
+        guard let parent = selectedTask else { return }
+        do {
+            _ = try workspace?.addSubtask(parentOccurrenceID: parent.occurrenceID, title: newChildTitle)
+            newChildTitle = ""
+            expandedParents.insert(parent.occurrenceID)
+            actionError = nil
+        } catch { actionError = error.localizedDescription }
     }
 
     func setCompleted(_ task: TaskRecord) {
