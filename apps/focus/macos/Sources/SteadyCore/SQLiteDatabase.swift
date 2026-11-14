@@ -681,6 +681,8 @@ final class SQLiteDatabase {
     private func migrateToVersionEleven() throws {
         try transaction {
             try execute("ALTER TABLE time_tool_runs ADD COLUMN pomodoro_state TEXT")
+            try execute("CREATE TABLE pomodoro_cycle (id INTEGER PRIMARY KEY CHECK(id = 1), full_intervals INTEGER NOT NULL CHECK(full_intervals >= 0))")
+            try execute("INSERT INTO pomodoro_cycle VALUES (1, 0)")
             try execute("PRAGMA user_version = 11")
         }
     }
@@ -733,8 +735,11 @@ final class SQLiteDatabase {
                 stoppedAt: nil, segments: [WorkSegment(id: UUID(), startedAt: instant, endedAt: nil)], timerBudgetSeconds: duration
             )
             if kind == .pomodoro {
-                let previous = try timeToolResults().last(where: { $0.kind == .pomodoro })
-                session.pomodoro = PomodoroState(cycleCount: previous?.pomodoro?.cycleCount ?? 0)
+                let cycleCount = try statement("SELECT full_intervals FROM pomodoro_cycle WHERE id = 1") { query in
+                    guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
+                    return Int(sqlite3_column_int64(query, 0))
+                }
+                session.pomodoro = PomodoroState(cycleCount: cycleCount)
             }
             try saveTimeToolSession(session)
         }
@@ -898,6 +903,9 @@ final class SQLiteDatabase {
                   session.timerBudgetSeconds.map { .number($0) } ?? .null,
                   session.endReason.map { .text($0.rawValue) } ?? .null,
                   try session.pomodoro.map { .text(String(decoding: try encodePomodoro($0), as: UTF8.self)) } ?? .null])
+        if let state = session.pomodoro {
+            try execute("UPDATE pomodoro_cycle SET full_intervals = ? WHERE id = 1", [.number(Double(state.cycleCount))])
+        }
         for (position, segment) in session.segments.enumerated() {
             try execute("""
                 INSERT INTO time_tool_segments (id, run_id, position, started_at, ended_at) VALUES (?, ?, ?, ?, ?)

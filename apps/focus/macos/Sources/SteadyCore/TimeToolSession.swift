@@ -69,7 +69,7 @@ public struct TimeToolSession: Identifiable, Equatable, Sendable {
         endReason = reason == .stopped && pomodoro?.focusFinished == true ? (endReason ?? reason) : reason
         closeSegment(at: instant)
         pomodoro?.closeRest(at: instant)
-        stoppedAt = max(instant, segments.last?.endedAt ?? startedAt)
+        stoppedAt = max(instant, max(segments.last?.endedAt ?? startedAt, pomodoro?.restSegments.last?.endedAt ?? startedAt))
     }
 
     /// Expiry belongs to the actual deadline, even when the UI wakes up late.
