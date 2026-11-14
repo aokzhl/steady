@@ -185,6 +185,7 @@ final class WorkspaceEditor {
     var draftNote: TaskNote = .empty
     var detailNote: TaskNote = .empty
     var draftChildLabelsNeedReplacement: Set<UUID> = []
+    var draftTimerDurationSeconds: TimeInterval?
     var draftPomodoroParameters: PomodoroParameters?
     var detailPomodoroParameters: PomodoroParameters?
     var draftChildren: [SubtaskDraft] = []
@@ -211,7 +212,7 @@ final class WorkspaceEditor {
         workspace?.tasks.first { $0.occurrenceID == selectedID }
     }
 
-    private var draft: CreationDraft { CreationDraft(title: draftTitle, priority: draftPriority, projectID: draftProjectID, projectWasChosen: draftProjectWasChosen, plannedDay: draftDay, dayWasChosen: draftDayWasChosen, note: draftNote, labelIDs: draftLabelIDs, labelsWereChosen: draftLabelsWereChosen, recurrence: draftRecurrence, seriesStart: draftSeriesStart, children: draftChildren, pomodoroParameters: draftPomodoroParameters) }
+    private var draft: CreationDraft { CreationDraft(title: draftTitle, priority: draftPriority, projectID: draftProjectID, projectWasChosen: draftProjectWasChosen, plannedDay: draftDay, dayWasChosen: draftDayWasChosen, note: draftNote, labelIDs: draftLabelIDs, labelsWereChosen: draftLabelsWereChosen, recurrence: draftRecurrence, seriesStart: draftSeriesStart, children: draftChildren, pomodoroParameters: draftPomodoroParameters, timerDurationSeconds: draftTimerDurationSeconds) }
 
     func openWorkspace() {
         guard workspace == nil else { return }
@@ -234,6 +235,7 @@ final class WorkspaceEditor {
             timerUpdates = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.updateTimer() }
             }
+            draftTimerDurationSeconds = opened.creationDraft?.timerDurationSeconds
             draftPomodoroParameters = opened.creationDraft?.pomodoroParameters
             draftChildren = opened.creationDraft?.children ?? []
             draftTitle = opened.creationDraft?.title ?? ""
@@ -302,6 +304,7 @@ final class WorkspaceEditor {
     func discardDraft() {
         do {
             try workspace?.discardCreationDraft()
+            draftTimerDurationSeconds = nil
             draftPomodoroParameters = nil
             draftChildren = []
             draftTitle = ""
@@ -325,6 +328,7 @@ final class WorkspaceEditor {
         guard let workspace, saveDraft() else { return }
         do {
             let task = try workspace.createTaskFromDraft()
+            draftTimerDurationSeconds = nil
             draftPomodoroParameters = nil
             draftChildren = []
             draftTitle = ""
@@ -673,16 +677,9 @@ final class WorkspaceEditor {
     }
 
     func confirmTimer() {
-        guard let minutes = Double(timerMinutes.replacingOccurrences(of: ",", with: ".")), minutes.isFinite, minutes > 0 else {
-            timerPromptError = "Введите длительность больше нуля в минутах."
-            return
-        }
-        guard (minutes * 60).isFinite, minutes * 60 <= TimeToolSession.maximumTimerDurationSeconds else {
-            timerPromptError = WorkspaceError.invalidTimerDuration.localizedDescription
-            return
-        }
         do {
-            try workspace?.startTimer(occurrenceID: timerPromptTask?.occurrenceID, durationSeconds: minutes * 60)
+            let seconds = try timerSeconds(fromMinutes: timerMinutes)
+            try workspace?.startTimer(occurrenceID: timerPromptTask?.occurrenceID, durationSeconds: seconds)
             timerPromptVisible = false
             actionError = nil
         } catch { timerPromptError = error.localizedDescription }

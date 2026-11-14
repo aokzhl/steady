@@ -170,6 +170,7 @@ public final class TaskWorkspace {
     public private(set) var timeToolResults: [TimeToolSession] = []
     public private(set) var creationDraft: CreationDraft?
     public private(set) var preferences: WorkspacePreferences
+    private var savedTimerDurations: [UUID: TimeInterval] = [:]
     private var pendingPausedSession: TimeToolSession?
     public var sessionNeedsSave: Bool { pendingPausedSession != nil }
     private let database: SQLiteDatabase
@@ -194,6 +195,7 @@ public final class TaskWorkspace {
         self.creationDraft = try database.creationDraft()
         self.activeSession = try database.activeTimeToolSession()
         self.timeToolResults = try database.timeToolResults()
+        self.savedTimerDurations = try database.timerDurations()
     }
 
     public func savePreferences(_ preferences: WorkspacePreferences) throws {
@@ -286,6 +288,7 @@ public final class TaskWorkspace {
         for child in draft?.children ?? [] { _ = try validatedTitle(child.title) }
         tasks = try database.insert(task, createdAt: createdAt, consuming: draft, today: context.day, through: preparedThrough)
 
+        savedTimerDurations = try database.timerDurations()
         dayContext = context
         return tasks.first { $0.id == task.id && ($0.periodEnd ?? $0.plannedDay ?? "") >= context.day } ?? tasks.first { $0.id == task.id } ?? task
     }
@@ -517,7 +520,12 @@ public final class TaskWorkspace {
     }
 
     public func timerDurationSeconds(taskID: UUID) throws -> TimeInterval? {
-        try database.timerDurationSeconds(taskID: taskID)
+        savedTimerDurations[taskID]
+    }
+
+    public func setTimerDuration(taskID: UUID, durationSeconds: TimeInterval?) throws {
+        try database.updateTimerDuration(taskID: taskID, seconds: durationSeconds)
+        savedTimerDurations = try database.timerDurations()
     }
 
     public func startTimer(occurrenceID: UUID? = nil, durationSeconds: TimeInterval? = nil) throws {
@@ -607,6 +615,7 @@ public final class TaskWorkspace {
     }
 
     private func loadTimeTools() throws {
+        savedTimerDurations = try database.timerDurations()
         if pendingPausedSession == nil { activeSession = try database.activeTimeToolSession() }
         timeToolResults = try database.timeToolResults()
     }

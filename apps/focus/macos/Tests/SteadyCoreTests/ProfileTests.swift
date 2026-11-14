@@ -109,6 +109,29 @@ struct ProfileTests {
         try reopened.discardCreationDraft()
         #expect(try TaskWorkspace(databaseURL: url).creationDraft == nil)
     }
+    @Test func editingSavedTimerDoesNotStartOrRewriteTheActiveRun() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        let workspace = try TaskWorkspace(databaseURL: url)
+        let task = try workspace.createTask(title: "Timer settings")
+        try await confirmation("Timer setting refreshes its displayed value") { notified in
+            withObservationTracking { _ = try? workspace.timerDurationSeconds(taskID: task.id) } onChange: { notified() }
+            try workspace.setTimerDuration(taskID: task.id, durationSeconds: 120)
+        }
+        #expect(workspace.activeSession == nil)
+        try workspace.startTimer(occurrenceID: task.occurrenceID)
+        let run = try #require(workspace.activeSession)
+        try workspace.setTimerDuration(taskID: task.id, durationSeconds: 300)
+        #expect(workspace.activeSession == run)
+        #expect(throws: WorkspaceError.invalidTimerDuration) { try workspace.setTimerDuration(taskID: task.id, durationSeconds: 0) }
+        try workspace.setTimerDuration(taskID: task.id, durationSeconds: nil)
+        #expect(workspace.activeSession == run)
+        try workspace.stopSession()
+        let reopened = try TaskWorkspace(databaseURL: url)
+        #expect(try reopened.timerDurationSeconds(taskID: task.id) == nil)
+        #expect(throws: WorkspaceError.timerDurationRequired) { try reopened.startTimer(occurrenceID: task.occurrenceID) }
+    }
     @Test(arguments: [12, 13]) func legacyDraftChildrenAndSessionSnapshotsSurviveProfileMigration(version: Int) throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

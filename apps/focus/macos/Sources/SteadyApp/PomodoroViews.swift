@@ -5,6 +5,83 @@ func pomodoroLabel(_ parameters: PomodoroParameters) -> String {
     "\(durationLabel(parameters.workSeconds)) / \(durationLabel(parameters.shortRestSeconds)) / \(durationLabel(parameters.longRestSeconds)) · после \(parameters.longRestAfter)"
 }
 
+func timerSeconds(fromMinutes text: String) throws -> TimeInterval {
+    guard let minutes = Double(text.replacingOccurrences(of: ",", with: ".")), minutes.isFinite,
+          minutes > 0, (minutes * 60).isFinite, minutes * 60 <= TimeToolSession.maximumTimerDurationSeconds else {
+        throw WorkspaceError.invalidTimerDuration
+    }
+    return minutes * 60
+}
+
+private func compactPomodoroLabel(_ parameters: PomodoroParameters) -> String {
+    let durations = [parameters.workSeconds, parameters.shortRestSeconds, parameters.longRestSeconds]
+        .map { String(format: "%g", $0 / 60) }.joined(separator: " / ")
+    return durations + " мин · " + String(parameters.longRestAfter)
+}
+
+struct TimerField: View {
+    let duration: TimeInterval?
+    let save: (TimeInterval?) throws -> Void
+    @State private var editing = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            PropertyRow(title: "Таймер", icon: "hourglass") {
+                PropertyMenu(title: duration.map(durationLabel) ?? "Не задано") {
+                    Button("Изменить длительность…") { editing = true }
+                    if duration != nil {
+                        Button("Не задано") {
+                            do { try save(nil); error = nil }
+                            catch { self.error = error.localizedDescription }
+                        }
+                    }
+                }
+            }
+            if let error { StorageNotice(message: error) }
+        }
+        .sheet(isPresented: $editing) {
+            TimerParameterEditor(initial: duration) { seconds in
+                try save(seconds)
+                error = nil
+            }
+        }
+    }
+}
+
+private struct TimerParameterEditor: View {
+    let initial: TimeInterval?
+    let save: (TimeInterval?) throws -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var minutes = ""
+    @State private var error: String?
+
+    private func apply(_ seconds: TimeInterval?) {
+        do { try save(seconds); dismiss() }
+        catch { self.error = error.localizedDescription }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Длительность таймера").font(.headline)
+            TextField("Минуты", text: $minutes)
+                .accessibilityIdentifier("timer-setting-minutes")
+            if let error { StorageNotice(message: error) }
+            HStack {
+                Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction)
+                if initial != nil { Button("Не задано") { apply(nil) } }
+                Spacer()
+                Button("Готово") {
+                    do { apply(try timerSeconds(fromMinutes: minutes)) }
+                    catch { self.error = error.localizedDescription }
+                }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24).frame(width: 340)
+        .onAppear { minutes = initial.map { String(format: "%g", $0 / 60) } ?? "" }
+    }
+}
+
 struct PomodoroParameterEditor: View {
     let initial: PomodoroParameters
     let save: (PomodoroParameters) throws -> Void
@@ -14,12 +91,6 @@ struct PomodoroParameterEditor: View {
     @State private var longRest = ""
     @State private var count = ""
     @State private var error: String?
-
-    private func seconds(_ text: String) throws -> Double {
-        guard let minutes = Double(text.replacingOccurrences(of: ",", with: ".")), minutes.isFinite,
-              minutes > 0, (minutes * 60).isFinite, minutes * 60 <= TimeToolSession.maximumTimerDurationSeconds else { throw WorkspaceError.invalidTimerDuration }
-        return minutes * 60
-    }
 
     var body: some View {
         Form {
@@ -34,7 +105,7 @@ struct PomodoroParameterEditor: View {
                 Button("Сохранить") {
                     do {
                         guard let count = Int(count), count > 0 else { throw WorkspaceError.invalidTimerDuration }
-                        try save(PomodoroParameters(workSeconds: seconds(work), shortRestSeconds: seconds(shortRest), longRestSeconds: seconds(longRest), longRestAfter: count))
+                        try save(PomodoroParameters(workSeconds: timerSeconds(fromMinutes: work), shortRestSeconds: timerSeconds(fromMinutes: shortRest), longRestSeconds: timerSeconds(fromMinutes: longRest), longRestAfter: count))
                         dismiss()
                     } catch { self.error = error.localizedDescription }
                 }.keyboardShortcut(.defaultAction)
@@ -57,19 +128,16 @@ struct PomodoroField: View {
     @State private var editing = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Menu {
+        PropertyRow(title: "Помодоро", icon: "timer") {
+            PropertyMenu(title: parameters.map(compactPomodoroLabel) ?? (isChild ? "Как у родителя" : "Не задано")) {
                 Button(isChild ? "Как у родителя" : "Выбранный профиль") { parameters = nil }
-                Button("Свои") { editing = true }
+                Button("Свои параметры…") { editing = true }
                 Divider()
                 ForEach(workspace.pomodoroProfiles) { profile in
                     Button(profile.title) { parameters = profile.parameters }
                 }
-            } label: {
-                Text("Помодоро · " + (parameters == nil ? (isChild ? "Как у родителя" : "Выбранный профиль") : "Свои"))
             }
-            Text(pomodoroLabel(parameters ?? inherited)).font(.caption).foregroundStyle(.secondary)
-            Button("Изменить параметры") { editing = true }.font(.caption)
+            .help(pomodoroLabel(parameters ?? inherited))
         }
         .sheet(isPresented: $editing) {
             PomodoroParameterEditor(initial: parameters ?? inherited) { parameters = $0 }

@@ -790,6 +790,28 @@ final class SQLiteDatabase {
         try execute("INSERT INTO task_timer_settings (task_id, duration_seconds) VALUES (?, ?) ON CONFLICT(task_id) DO UPDATE SET duration_seconds = excluded.duration_seconds", [.text(taskID.uuidString), .number(seconds)])
     }
 
+    func timerDurations() throws -> [UUID: TimeInterval] {
+        try statement("SELECT task_id, duration_seconds FROM task_timer_settings") { query in
+            var durations: [UUID: TimeInterval] = [:]
+            var result = sqlite3_step(query)
+            while result == SQLITE_ROW {
+                guard let id = UUID(uuidString: text(query, 0)) else { throw failure() }
+                durations[id] = sqlite3_column_double(query, 1)
+                result = sqlite3_step(query)
+            }
+            guard result == SQLITE_DONE else { throw failure() }
+            return durations
+        }
+    }
+
+    func updateTimerDuration(taskID: UUID, seconds: TimeInterval?) throws {
+        try transaction {
+            guard try records().contains(where: { $0.id == taskID }) else { throw WorkspaceError.occurrenceNotFound }
+            if let seconds { try setTimerDuration(taskID: taskID, seconds: seconds) }
+            else { try execute("DELETE FROM task_timer_settings WHERE task_id = ?", [.text(taskID.uuidString)]) }
+        }
+    }
+
     func timerDurationSeconds(taskID: UUID) throws -> TimeInterval? {
         try statement("SELECT duration_seconds FROM task_timer_settings WHERE task_id = ?", [.text(taskID.uuidString)]) { query in
             let result = sqlite3_step(query)

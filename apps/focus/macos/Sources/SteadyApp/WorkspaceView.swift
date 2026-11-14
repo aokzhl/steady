@@ -620,6 +620,18 @@ private struct CreationPanel: View {
                 get: { editor.draftPriority },
                 set: { editor.draftPriority = $0; editor.saveDraft() }
             ))
+            if let workspace = editor.workspace {
+                Text("Инструменты").font(.system(size: 12)).foregroundStyle(.secondary)
+                    .padding(.top, 16).padding(.bottom, 6)
+                TimerField(duration: editor.draftTimerDurationSeconds) { seconds in
+                    editor.draftTimerDurationSeconds = seconds
+                    guard editor.saveDraft() else { throw WorkspaceError.storage(editor.draftError ?? "Не удалось сохранить черновик") }
+                }
+                PomodoroField(workspace: workspace, parameters: Binding(
+                    get: { editor.draftPomodoroParameters },
+                    set: { editor.draftPomodoroParameters = $0; editor.saveDraft() }
+                ), inherited: (try? workspace.pomodoroParameters()) ?? PomodoroParameters())
+            }
             VStack(alignment: .leading, spacing: 8) {
                 Text("Заметка").font(.system(size: 12)).foregroundStyle(.secondary)
                 TaskNoteEditor(note: Binding(
@@ -635,6 +647,14 @@ private struct CreationPanel: View {
                         TextField("Название подзадачи", text: childBinding(child, \.title))
                         if let workspace = editor.workspace {
                             LabelField(workspace: workspace, selection: childBinding(child, \.labelIDs, replacingLabels: true))
+                        }
+                        TimerField(duration: childBinding(child, \.timerDurationSeconds).wrappedValue) { seconds in
+                            childBinding(child, \.timerDurationSeconds).wrappedValue = seconds
+                            if let error = editor.draftError { throw WorkspaceError.storage(error) }
+                        }
+                        if let workspace = editor.workspace {
+                            PomodoroField(workspace: workspace, parameters: childBinding(child, \.pomodoroParameters),
+                                inherited: editor.draftPomodoroParameters ?? ((try? workspace.pomodoroParameters()) ?? PomodoroParameters()), isChild: true)
                         }
                         TaskNoteEditor(note: childBinding(child, \.note), accessibilityID: "child-note-\(child.id)").frame(height: 100)
                         Button("Удалить подзадачу") { editor.draftChildren.removeAll { $0.id == child.id }; editor.saveDraft() }
@@ -757,6 +777,20 @@ private struct DetailPanel: View {
                 ))
             }
             PriorityField(selection: Binding(get: { editor.detailPriority }, set: { editor.changePriority($0) }))
+            if let workspace = editor.workspace {
+                HStack {
+                    Text("Инструменты").font(.system(size: 12)).foregroundStyle(.secondary)
+                    Spacer()
+                    ToolMenu(editor: editor, task: task, compact: true)
+                }.padding(.top, 16).padding(.bottom, 6)
+                TimerField(duration: try? workspace.timerDurationSeconds(taskID: task.id)) { seconds in
+                    try workspace.setTimerDuration(taskID: task.id, durationSeconds: seconds)
+                }
+                PomodoroField(workspace: workspace, parameters: Binding(
+                    get: { editor.detailPomodoroParameters },
+                    set: { editor.changePomodoroParameters($0) }
+                ), inherited: (try? workspace.pomodoroParameters(taskID: task.parentTaskID)) ?? PomodoroParameters(), isChild: task.parentTaskID != nil)
+            }
             VStack(alignment: .leading, spacing: 8) {
                 Text("Заметка").font(.system(size: 12)).foregroundStyle(.secondary)
                 TaskNoteEditor(note: Binding(
@@ -1061,7 +1095,7 @@ private struct ScheduleField: View {
     }
 }
 
-private struct StorageNotice: View {
+struct StorageNotice: View {
     let message: String
 
     var body: some View {
