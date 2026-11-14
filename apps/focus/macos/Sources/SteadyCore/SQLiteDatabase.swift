@@ -794,21 +794,7 @@ final class SQLiteDatabase {
                 session.stop(at: instant)
             case .tick, .startRest, .backToWork: return
             case .adjust(let minutes):
-                guard (-20...20).contains(minutes) else { throw WorkspaceError.invalidTimerIncrement }
-                guard session.kind == .timer, let budget = session.timerBudgetSeconds else { return }
-                let elapsed = session.elapsedSeconds(at: instant)
-                let remaining = max(0, budget - elapsed + Double(minutes) * 60)
-                let adjustedBudget = elapsed + remaining
-                guard adjustedBudget.isFinite, adjustedBudget <= TimeToolSession.maximumTimerDurationSeconds else {
-                    throw WorkspaceError.invalidTimerDuration
-                }
-                session.timerBudgetSeconds = adjustedBudget
-                if remaining == 0 { session.stop(at: instant, reason: .manual) }
-                else if !session.isPaused {
-                    session.closeSegment(at: instant)
-                    let start = max(instant, session.segments.last?.endedAt ?? session.startedAt)
-                    session.segments.append(WorkSegment(id: UUID(), startedAt: start, endedAt: nil))
-                }
+                try session.adjustRemaining(minutes: minutes, at: instant)
             }
             try saveTimeToolSession(session)
         }
@@ -824,23 +810,8 @@ final class SQLiteDatabase {
         case .startRest: session.startPomodoroRest(at: instant)
         case .backToWork: session.returnToPomodoroWork(at: instant)
         case .adjust(let minutes):
-            guard !expired, var state = session.pomodoro, state.stage == .work else { return }
-            let elapsed = session.elapsedSeconds(at: instant) - state.focusStartElapsed
-            let remaining = max(0, state.focusBudgetSeconds - elapsed + Double(minutes) * 60)
-            guard (elapsed + remaining).isFinite, elapsed + remaining <= TimeToolSession.maximumTimerDurationSeconds else {
-                throw WorkspaceError.invalidTimerDuration
-            }
-            state.focusBudgetSeconds = elapsed + remaining
-            if remaining == 0 {
-                session.closeSegment(at: instant)
-                state.focusFinished = true
-                state.stage = .waitingBreak
-                session.endReason = .manual
-            } else if !session.isPaused {
-                session.closeSegment(at: instant)
-                session.segments.append(WorkSegment(id: UUID(), startedAt: max(instant, session.segments.last?.endedAt ?? instant), endedAt: nil))
-            }
-            session.pomodoro = state
+            guard !expired else { return }
+            try session.adjustRemaining(minutes: minutes, at: instant)
         }
     }
 

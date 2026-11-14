@@ -83,6 +83,46 @@ public struct TimeToolSession: Identifiable, Equatable, Sendable {
         return true
     }
 
+    /// Adjust the current countdown without changing its owner or pause state.
+    /// A manual zero ends partial work; only natural Pomodoro expiry awards a full focus.
+    mutating func adjustRemaining(minutes: Int, at instant: Date) throws {
+        guard (-20...20).contains(minutes) else { throw WorkspaceError.invalidTimerIncrement }
+        let budget: TimeInterval
+        let elapsed: TimeInterval
+        if let state = pomodoro {
+            guard state.stage == .work else { return }
+            budget = state.focusBudgetSeconds
+            elapsed = elapsedSeconds(at: instant) - state.focusStartElapsed
+        } else {
+            guard kind == .timer, let timerBudgetSeconds else { return }
+            budget = timerBudgetSeconds
+            elapsed = elapsedSeconds(at: instant)
+        }
+        let remaining = max(0, budget - elapsed + Double(minutes) * 60)
+        let adjustedBudget = elapsed + remaining
+        guard adjustedBudget.isFinite, adjustedBudget <= Self.maximumTimerDurationSeconds else {
+            throw WorkspaceError.invalidTimerDuration
+        }
+        if var state = pomodoro {
+            state.focusBudgetSeconds = adjustedBudget
+            if remaining == 0 {
+                closeSegment(at: instant)
+                state.focusFinished = true
+                state.stage = .waitingBreak
+                endReason = .manual
+            }
+            pomodoro = state
+        } else {
+            timerBudgetSeconds = adjustedBudget
+            if remaining == 0 { stop(at: instant, reason: .manual) }
+        }
+        if remaining > 0, !isPaused {
+            closeSegment(at: instant)
+            let start = max(instant, segments.last?.endedAt ?? startedAt)
+            segments.append(WorkSegment(id: UUID(), startedAt: start, endedAt: nil))
+        }
+    }
+
     mutating func closeSegment(at instant: Date) {
         guard let last = segments.indices.last, segments[last].endedAt == nil else { return }
         segments[last].endedAt = max(segments[last].startedAt, instant)
