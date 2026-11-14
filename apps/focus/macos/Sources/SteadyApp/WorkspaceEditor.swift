@@ -515,6 +515,18 @@ final class WorkspaceEditor {
         catch { actionError = error.localizedDescription }
     }
 
+    func startPomodoro(_ task: TaskRecord? = nil) {
+        performTimeToolAction { try workspace?.startPomodoro(occurrenceID: task?.occurrenceID) }
+    }
+
+    func startRest() {
+        performTimeToolAction { try workspace?.startRest() }
+    }
+
+    func backToWork() {
+        performTimeToolAction { try workspace?.backToWork() }
+    }
+
     func startStopwatch(_ task: TaskRecord? = nil) {
         performTimeToolAction { try workspace?.startStopwatch(occurrenceID: task?.occurrenceID) }
     }
