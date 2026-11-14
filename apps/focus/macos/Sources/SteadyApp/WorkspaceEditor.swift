@@ -42,18 +42,22 @@ final class WorkspaceEditor {
     var searchQuery = ""
     private var searchOrigin: WorkspacePreferences?
     private var searchOriginWasCreating = false
+    var searchFocusRequest = 0
     var isSearching: Bool { searchOrigin != nil }
     var searchAllTasks: Bool { isSearching && context == TaskListContext(period: .all, showCompleted: true) }
     var listResult: TaskListResult? { workspace?.taskList(in: context, searchQuery: searchQuery) }
 
     @discardableResult
     func beginSearch() -> Bool {
-        if isSearching { return true }
         guard saveDetails(), !isCreating || saveDraft() else { return false }
-        searchOrigin = navigation
-        searchOriginWasCreating = isCreating
+        if !isSearching {
+            searchOrigin = navigation
+            searchOriginWasCreating = isCreating
+        }
         isCreating = false
+        detailsVisible = false
         screen = .tasks
+        searchFocusRequest += 1
         return true
     }
 
@@ -88,7 +92,7 @@ final class WorkspaceEditor {
         let project = workspace?.projects.first { $0.id == selectedProjectID }?.title
         let labels = workspace?.labels.filter { context.labelIDs.contains($0.id) }.map(\.title) ?? []
         let names = [project].compactMap { $0 } + labels
-        return ((names.isEmpty ? ["Все задачи"] : names) + [period.label]).joined(separator: " · ")
+        return (names.isEmpty ? ["Все задачи"] : names).joined(separator: " · ")
     }
     @discardableResult
     func saveNavigation() -> Bool {
@@ -169,7 +173,11 @@ final class WorkspaceEditor {
             restoringNavigation = true
             navigation = opened.preferences
             try opened.prepareTaskList(in: context)
-            if navigation.detailsVisible, let task = selectedTask { showDetails(for: task) }
+            if let task = selectedTask {
+                let visible = navigation.detailsVisible
+                showDetails(for: task)
+                detailsVisible = visible
+            }
             restoringNavigation = false
             timerUpdates = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.updateTimer() }
@@ -217,6 +225,7 @@ final class WorkspaceEditor {
         // A failed save remains in this model even when the panel is hidden.
         _ = saveDraft()
         isCreating = false
+        if isSearching { searchFocusRequest += 1 }
     }
 
     @discardableResult
@@ -308,7 +317,10 @@ final class WorkspaceEditor {
     }
 
     func closeDetails() {
-        if saveDetails() { detailsVisible = false }
+        if saveDetails() {
+            detailsVisible = false
+            if isSearching { searchFocusRequest += 1 }
+        }
     }
 
     @discardableResult

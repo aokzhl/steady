@@ -11,15 +11,14 @@ struct LabelChips: View {
         HStack(spacing: 5) {
             ForEach(Array(selected.prefix(2))) { label in
                 HStack(spacing: 4) {
-                    ProjectMarker(color: label.color)
                     Text(label.title).lineLimit(1)
                 }
-                .padding(.horizontal, 5).padding(.vertical, 3)
-                .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 4))
+                .padding(.horizontal, 5).padding(.vertical, 1)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.white.opacity(0.2)))
             }
             if selected.count > 2 { Text("+\(selected.count - 2)") }
         }
-        .font(.system(size: 10)).foregroundStyle(.secondary)
+        .font(.system(size: 11)).foregroundStyle(.secondary)
         .help(selected.map(\.title).joined(separator: ", "))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(selected.map(\.title).joined(separator: ", "))
@@ -44,12 +43,12 @@ struct LabelField: View {
 
     var body: some View {
         Button { visible = true } label: {
-            HStack {
-                Label("Метки", systemImage: "tag").foregroundStyle(.secondary)
-                Spacer()
-                Text(summary).lineLimit(2).multilineTextAlignment(.trailing)
+            PropertyRow(title: "Метки", icon: "tag") {
+                HStack(spacing: 8) {
+                    Text(summary).lineLimit(1)
+                    Image(systemName: "chevron.right").font(.system(size: 10))
+                }
             }
-            .font(.system(size: 12))
         }
         .buttonStyle(.plain).accessibilityIdentifier("task-labels")
         .popover(isPresented: $visible) {
