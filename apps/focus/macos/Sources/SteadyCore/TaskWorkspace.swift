@@ -112,6 +112,8 @@ public struct SubtaskDraft: Identifiable, Equatable, Sendable, Codable {
     public var title: String
     public var note: TaskNote
     public var labelIDs: Set<UUID>
+    public var pomodoroParameters: PomodoroParameters? = nil
+    public var timerDurationSeconds: TimeInterval? = nil
     public init(id: UUID = UUID(), title: String = "", note: TaskNote = .empty, labelIDs: Set<UUID> = []) {
         self.id = id; self.title = title; self.note = note; self.labelIDs = labelIDs
     }
@@ -130,8 +132,12 @@ public struct CreationDraft: Equatable, Sendable {
     public let recurrence: TaskRecurrence?
     public let seriesStart: String?
     public let children: [SubtaskDraft]
+    public let pomodoroParameters: PomodoroParameters?
+    public let timerDurationSeconds: TimeInterval?
 
-    public init(title: String = "", priority: TaskPriority = .none, projectID: UUID? = nil, projectWasChosen: Bool = false, plannedDay: String? = nil, dayWasChosen: Bool = false, note: TaskNote = .empty, labelIDs: Set<UUID> = [], labelsWereChosen: Bool = false, recurrence: TaskRecurrence? = nil, seriesStart: String? = nil, children: [SubtaskDraft] = []) {
+    public init(title: String = "", priority: TaskPriority = .none, projectID: UUID? = nil, projectWasChosen: Bool = false, plannedDay: String? = nil, dayWasChosen: Bool = false, note: TaskNote = .empty, labelIDs: Set<UUID> = [], labelsWereChosen: Bool = false, recurrence: TaskRecurrence? = nil, seriesStart: String? = nil, children: [SubtaskDraft] = [], pomodoroParameters: PomodoroParameters? = nil, timerDurationSeconds: TimeInterval? = nil) {
+        self.timerDurationSeconds = timerDurationSeconds
+        self.pomodoroParameters = pomodoroParameters
         self.children = children
         self.recurrence = recurrence
         self.seriesStart = seriesStart
@@ -147,13 +153,15 @@ public struct CreationDraft: Equatable, Sendable {
     }
 
     public var isEmpty: Bool {
-        children.isEmpty && title.isEmpty && priority == .none && projectID == nil && !projectWasChosen && note == .empty && plannedDay == nil && !dayWasChosen && recurrence == nil && seriesStart == nil && labelIDs.isEmpty && !labelsWereChosen
+        timerDurationSeconds == nil && pomodoroParameters == nil && children.isEmpty && title.isEmpty && priority == .none && projectID == nil && !projectWasChosen && note == .empty && plannedDay == nil && !dayWasChosen && recurrence == nil && seriesStart == nil && labelIDs.isEmpty && !labelsWereChosen
     }
 }
 
 @MainActor
 @Observable
 public final class TaskWorkspace {
+    public private(set) var pomodoroProfiles: [PomodoroProfile] = []
+    public private(set) var selectedPomodoroProfileID: UUID?
     public private(set) var lastDeletedLabel: LabelRecord?
     public private(set) var labels: [LabelRecord] = []
     public private(set) var projects: [ProjectRecord] = []
@@ -162,6 +170,7 @@ public final class TaskWorkspace {
     public private(set) var timeToolResults: [TimeToolSession] = []
     public private(set) var creationDraft: CreationDraft?
     public private(set) var preferences: WorkspacePreferences
+    private var savedTimerDurations: [UUID: TimeInterval] = [:]
     private var pendingPausedSession: TimeToolSession?
     public var sessionNeedsSave: Bool { pendingPausedSession != nil }
     private let database: SQLiteDatabase
@@ -176,6 +185,8 @@ public final class TaskWorkspace {
         self.dayContext = DayContext(date: now(), calendar: calendar())
         self.database = try SQLiteDatabase(url: databaseURL)
         self.preferences = try database.workspacePreferences()
+        self.pomodoroProfiles = try database.pomodoroProfiles()
+        self.selectedPomodoroProfileID = try database.selectedPomodoroProfileID()
         self.lastDeletedLabel = try database.lastDeletedLabel()
         self.labels = try database.labels()
         self.projects = try database.projects()
@@ -184,6 +195,7 @@ public final class TaskWorkspace {
         self.creationDraft = try database.creationDraft()
         self.activeSession = try database.activeTimeToolSession()
         self.timeToolResults = try database.timeToolResults()
+        self.savedTimerDurations = try database.timerDurations()
     }
 
     public func savePreferences(_ preferences: WorkspacePreferences) throws {
@@ -276,6 +288,7 @@ public final class TaskWorkspace {
         for child in draft?.children ?? [] { _ = try validatedTitle(child.title) }
         tasks = try database.insert(task, createdAt: createdAt, consuming: draft, today: context.day, through: preparedThrough)
 
+        savedTimerDurations = try database.timerDurations()
         dayContext = context
         return tasks.first { $0.id == task.id && ($0.periodEnd ?? $0.plannedDay ?? "") >= context.day } ?? tasks.first { $0.id == task.id } ?? task
     }
@@ -347,14 +360,14 @@ public final class TaskWorkspace {
     public func prepareCreationDraft(projectID: UUID? = nil, plannedDay: String? = nil, labelIDs: Set<UUID> = []) throws -> CreationDraft {
         let saved = creationDraft ?? CreationDraft()
         let hasSavedInput = !saved.title.isEmpty || saved.priority != .none || saved.projectID != nil
-            || saved.projectWasChosen || saved.note != .empty || saved.dayWasChosen || saved.recurrence != nil || !saved.labelIDs.isEmpty || saved.labelsWereChosen || !saved.children.isEmpty
+            || saved.projectWasChosen || saved.note != .empty || saved.dayWasChosen || saved.recurrence != nil || !saved.labelIDs.isEmpty || saved.labelsWereChosen || !saved.children.isEmpty || saved.pomodoroParameters != nil || saved.timerDurationSeconds != nil
         let prepared = CreationDraft(
             title: saved.title, priority: saved.priority,
             projectID: creationDraft != nil ? saved.projectID : projectID,
             projectWasChosen: saved.projectWasChosen,
             plannedDay: hasSavedInput ? saved.plannedDay : plannedDay,
             dayWasChosen: saved.dayWasChosen, note: saved.note,
-            labelIDs: creationDraft != nil ? saved.labelIDs : labelIDs, labelsWereChosen: saved.labelsWereChosen, recurrence: saved.recurrence, seriesStart: saved.seriesStart, children: saved.children
+            labelIDs: creationDraft != nil ? saved.labelIDs : labelIDs, labelsWereChosen: saved.labelsWereChosen, recurrence: saved.recurrence, seriesStart: saved.seriesStart, children: saved.children, pomodoroParameters: saved.pomodoroParameters, timerDurationSeconds: saved.timerDurationSeconds
         )
         try saveCreationDraft(prepared)
         return prepared
@@ -362,6 +375,11 @@ public final class TaskWorkspace {
 
     /// Set `replacingLabels` for an explicit picker choice, including an empty selection.
     public func saveCreationDraft(_ draft: CreationDraft, replacingLabels: Bool = false, replacingChildLabels: Set<UUID> = []) throws {
+        for duration in [draft.timerDurationSeconds] + draft.children.map(\.timerDurationSeconds) {
+            if let duration { try TimeToolSession.validateTimerDuration(duration) }
+        }
+        try draft.pomodoroParameters?.validate()
+        for child in draft.children { try child.pomodoroParameters?.validate() }
         try validateDay(draft.plannedDay)
         try validateDay(draft.seriesStart)
         try draft.recurrence?.validate()
@@ -460,6 +478,31 @@ public final class TaskWorkspace {
         return state.restRemaining(at: now())
     }
 
+    @discardableResult
+    public func savePomodoroProfile(id: UUID? = nil, title: String, parameters: PomodoroParameters) throws -> PomodoroProfile {
+        try parameters.validate()
+        let profile = PomodoroProfile(id: id ?? UUID(), title: try validatedTitle(title), parameters: parameters)
+        try database.savePomodoroProfile(profile)
+        pomodoroProfiles = try database.pomodoroProfiles()
+        return profile
+    }
+
+    public func selectPomodoroProfile(id: UUID) throws {
+        try database.selectPomodoroProfile(id: id)
+        selectedPomodoroProfileID = id
+    }
+
+    public func pomodoroOverride(taskID: UUID) throws -> PomodoroParameters? { try database.pomodoroOverride(taskID: taskID) }
+    public func pomodoroParameters(taskID: UUID? = nil) throws -> PomodoroParameters {
+        // Read observable profile state so labels refresh after profile edits and selection.
+        let parameters = pomodoroProfiles.first { $0.id == selectedPomodoroProfileID }?.parameters ?? PomodoroParameters()
+        return try database.pomodoroParameters(taskID: taskID, profileParameters: parameters)
+    }
+    public func setPomodoroParameters(taskID: UUID, parameters: PomodoroParameters?) throws {
+        try parameters?.validate()
+        try database.setPomodoroParameters(taskID: taskID, parameters: parameters)
+    }
+
     public func startPomodoro(occurrenceID: UUID? = nil) throws {
         try retrySessionSave()
         try database.startPomodoro(occurrenceID: occurrenceID, at: now(), timeZone: calendar().timeZone.identifier)
@@ -477,7 +520,12 @@ public final class TaskWorkspace {
     }
 
     public func timerDurationSeconds(taskID: UUID) throws -> TimeInterval? {
-        try database.timerDurationSeconds(taskID: taskID)
+        savedTimerDurations[taskID]
+    }
+
+    public func setTimerDuration(taskID: UUID, durationSeconds: TimeInterval?) throws {
+        try database.updateTimerDuration(taskID: taskID, seconds: durationSeconds)
+        savedTimerDurations = try database.timerDurations()
     }
 
     public func startTimer(occurrenceID: UUID? = nil, durationSeconds: TimeInterval? = nil) throws {
@@ -567,6 +615,7 @@ public final class TaskWorkspace {
     }
 
     private func loadTimeTools() throws {
+        savedTimerDurations = try database.timerDurations()
         if pendingPausedSession == nil { activeSession = try database.activeTimeToolSession() }
         timeToolResults = try database.timeToolResults()
     }

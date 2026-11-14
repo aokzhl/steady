@@ -620,6 +620,18 @@ private struct CreationPanel: View {
                 get: { editor.draftPriority },
                 set: { editor.draftPriority = $0; editor.saveDraft() }
             ))
+            if let workspace = editor.workspace {
+                Text("Инструменты").font(.system(size: 12)).foregroundStyle(.secondary)
+                    .padding(.top, 16).padding(.bottom, 6)
+                TimerField(duration: editor.draftTimerDurationSeconds) { seconds in
+                    editor.draftTimerDurationSeconds = seconds
+                    guard editor.saveDraft() else { throw WorkspaceError.storage(editor.draftError ?? "Не удалось сохранить черновик") }
+                }
+                PomodoroField(workspace: workspace, parameters: Binding(
+                    get: { editor.draftPomodoroParameters },
+                    set: { editor.draftPomodoroParameters = $0; editor.saveDraft() }
+                ), inherited: (try? workspace.pomodoroParameters()) ?? PomodoroParameters())
+            }
             VStack(alignment: .leading, spacing: 8) {
                 Text("Заметка").font(.system(size: 12)).foregroundStyle(.secondary)
                 TaskNoteEditor(note: Binding(
@@ -635,6 +647,14 @@ private struct CreationPanel: View {
                         TextField("Название подзадачи", text: childBinding(child, \.title))
                         if let workspace = editor.workspace {
                             LabelField(workspace: workspace, selection: childBinding(child, \.labelIDs, replacingLabels: true))
+                        }
+                        TimerField(duration: childBinding(child, \.timerDurationSeconds).wrappedValue) { seconds in
+                            childBinding(child, \.timerDurationSeconds).wrappedValue = seconds
+                            if let error = editor.draftError { throw WorkspaceError.storage(error) }
+                        }
+                        if let workspace = editor.workspace {
+                            PomodoroField(workspace: workspace, parameters: childBinding(child, \.pomodoroParameters),
+                                inherited: editor.draftPomodoroParameters ?? ((try? workspace.pomodoroParameters()) ?? PomodoroParameters()), isChild: true)
                         }
                         TaskNoteEditor(note: childBinding(child, \.note), accessibilityID: "child-note-\(child.id)").frame(height: 100)
                         Button("Удалить подзадачу") { editor.draftChildren.removeAll { $0.id == child.id }; editor.saveDraft() }
@@ -757,6 +777,20 @@ private struct DetailPanel: View {
                 ))
             }
             PriorityField(selection: Binding(get: { editor.detailPriority }, set: { editor.changePriority($0) }))
+            if let workspace = editor.workspace {
+                HStack {
+                    Text("Инструменты").font(.system(size: 12)).foregroundStyle(.secondary)
+                    Spacer()
+                    ToolMenu(editor: editor, task: task, compact: true)
+                }.padding(.top, 16).padding(.bottom, 6)
+                TimerField(duration: try? workspace.timerDurationSeconds(taskID: task.id)) { seconds in
+                    try workspace.setTimerDuration(taskID: task.id, durationSeconds: seconds)
+                }
+                PomodoroField(workspace: workspace, parameters: Binding(
+                    get: { editor.detailPomodoroParameters },
+                    set: { editor.changePomodoroParameters($0) }
+                ), inherited: (try? workspace.pomodoroParameters(taskID: task.parentTaskID)) ?? PomodoroParameters(), isChild: task.parentTaskID != nil)
+            }
             VStack(alignment: .leading, spacing: 8) {
                 Text("Заметка").font(.system(size: 12)).foregroundStyle(.secondary)
                 TaskNoteEditor(note: Binding(
@@ -1061,7 +1095,7 @@ private struct ScheduleField: View {
     }
 }
 
-private struct StorageNotice: View {
+struct StorageNotice: View {
     let message: String
 
     var body: some View {
@@ -1076,6 +1110,7 @@ private struct ToolMenu: View {
     @Bindable var editor: WorkspaceEditor
     let task: TaskRecord?
     var compact = false
+    @State private var profilesVisible = false
 
     private var timerTitle: String {
         guard let task else { return "Таймер · Не задано" }
@@ -1091,10 +1126,11 @@ private struct ToolMenu: View {
         Menu {
             Button(timerTitle) { editor.requestTimer(task) }
                 .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil || task?.skippedAt != nil)
-            Button("Помодоро · 25 / 5 / 15 · после 4") { editor.startPomodoro(task) }
+            Button("Помодоро · " + pomodoroLabel((try? editor.workspace?.pomodoroParameters(taskID: task?.id)) ?? PomodoroParameters())) { editor.startPomodoro(task) }
                 .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil || task?.skippedAt != nil)
             Button("Секундомер · Счёт вверх") { editor.startStopwatch(task) }
                 .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil || task?.skippedAt != nil)
+            Button("Профили помодоро…") { profilesVisible = true }
             if editor.workspace?.activeSession != nil {
                 Divider()
                 Text("Сначала остановите текущую сессию (в том числе на паузе)")
@@ -1132,6 +1168,9 @@ private struct ToolMenu: View {
         .fixedSize()
         .help("Выбрать инструмент времени" + (task == nil ? " без задачи" : ""))
         .accessibilityIdentifier(task.map { "task-tools-\($0.id)" } ?? "free-tools")
+        .sheet(isPresented: $profilesVisible) {
+            if let workspace = editor.workspace { PomodoroProfilesView(workspace: workspace) }
+        }
     }
 }
 
@@ -1281,7 +1320,7 @@ private struct RunHistory: View {
     }
 }
 
-private func durationLabel(_ seconds: TimeInterval) -> String {
+func durationLabel(_ seconds: TimeInterval) -> String {
     guard seconds.isFinite, let value = Int(exactly: max(0, seconds).rounded(.towardZero)) else { return "—" }
     let hours = String(value / 3600)
     return (hours.count < 2 ? "0" + hours : hours) + String(format: ":%02d:%02d", (value % 3600) / 60, value % 60)

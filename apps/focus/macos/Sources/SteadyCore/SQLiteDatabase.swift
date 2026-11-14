@@ -91,7 +91,7 @@ final class SQLiteDatabase {
                 guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
                 return Int(sqlite3_column_int(query, 0))
             }
-            guard version <= 13 else { throw WorkspaceError.unsupportedSchema(version) }
+            guard version <= 14 else { throw WorkspaceError.unsupportedSchema(version) }
             if version == 0 { try migrateToVersionOne() }
             if version < 2 { try migrateToVersionTwo() }
             if version < 3 { try migrateToVersionThree() }
@@ -105,6 +105,7 @@ final class SQLiteDatabase {
             if version < 11 { try migrateToVersionEleven() }
             if version < 12 { try migrateToVersionTwelve() }
             if version < 13 { try migrateToVersionThirteen() }
+            if version < 14 { try migrateProfiles() }
         } catch {
             sqlite3_close(connection)
             connection = nil
@@ -159,6 +160,8 @@ final class SQLiteDatabase {
     private func insertChild(_ child: SubtaskDraft, parentID: UUID, at instant: Date, restoringDraft: Bool = false) throws {
         if !restoringDraft { try validateLabels(child.labelIDs) }
         try execute("INSERT INTO tasks (id, title, created_at, priority, note_rtf, note_text, parent_task_id) VALUES (?, ?, ?, 'none', ?, ?, ?)", [.text(child.id.uuidString), .text(child.title.trimmingCharacters(in: .whitespacesAndNewlines)), .number(instant.timeIntervalSince1970), .blob(child.note.rtf), .text(child.note.plainText), .text(parentID.uuidString)])
+        try setPomodoroParameters(taskID: child.id, parameters: child.pomodoroParameters)
+        if let duration = child.timerDurationSeconds { try setTimerDuration(taskID: child.id, seconds: duration) }
         for label in child.labelIDs {
             try execute("INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)", [.text(child.id.uuidString), .text(label.uuidString)])
         }
@@ -598,6 +601,8 @@ final class SQLiteDatabase {
             for labelID in record.labelIDs {
                 try execute("INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)", [.text(record.id.uuidString), .text(labelID.uuidString)])
             }
+            if let duration = draft?.timerDurationSeconds { try setTimerDuration(taskID: record.id, seconds: duration) }
+            if let parameters = draft?.pomodoroParameters { try setPomodoroParameters(taskID: record.id, parameters: parameters) }
             for child in draft == nil ? [] : try rawDraftChildren() { try insertChild(child, parentID: record.id, at: createdAt, restoringDraft: true) }
             try materializeChildren()
             if draft != nil { try execute("DELETE FROM creation_draft") }
@@ -780,6 +785,33 @@ final class SQLiteDatabase {
         try startTimeTool(kind: .pomodoro, occurrenceID: occurrenceID, durationSeconds: nil, at: instant, timeZone: timeZone)
     }
 
+    private func setTimerDuration(taskID: UUID, seconds: TimeInterval) throws {
+        try TimeToolSession.validateTimerDuration(seconds)
+        try execute("INSERT INTO task_timer_settings (task_id, duration_seconds) VALUES (?, ?) ON CONFLICT(task_id) DO UPDATE SET duration_seconds = excluded.duration_seconds", [.text(taskID.uuidString), .number(seconds)])
+    }
+
+    func timerDurations() throws -> [UUID: TimeInterval] {
+        try statement("SELECT task_id, duration_seconds FROM task_timer_settings") { query in
+            var durations: [UUID: TimeInterval] = [:]
+            var result = sqlite3_step(query)
+            while result == SQLITE_ROW {
+                guard let id = UUID(uuidString: text(query, 0)) else { throw failure() }
+                durations[id] = sqlite3_column_double(query, 1)
+                result = sqlite3_step(query)
+            }
+            guard result == SQLITE_DONE else { throw failure() }
+            return durations
+        }
+    }
+
+    func updateTimerDuration(taskID: UUID, seconds: TimeInterval?) throws {
+        try transaction {
+            guard try records().contains(where: { $0.id == taskID }) else { throw WorkspaceError.occurrenceNotFound }
+            if let seconds { try setTimerDuration(taskID: taskID, seconds: seconds) }
+            else { try execute("DELETE FROM task_timer_settings WHERE task_id = ?", [.text(taskID.uuidString)]) }
+        }
+    }
+
     func timerDurationSeconds(taskID: UUID) throws -> TimeInterval? {
         try statement("SELECT duration_seconds FROM task_timer_settings WHERE task_id = ?", [.text(taskID.uuidString)]) { query in
             let result = sqlite3_step(query)
@@ -813,9 +845,9 @@ final class SQLiteDatabase {
             if kind == .timer {
                 if duration == nil, let owner { duration = try timerDurationSeconds(taskID: owner.id) }
                 guard let value = duration else { throw WorkspaceError.timerDurationRequired }
-                guard value.isFinite, value > 0, value <= TimeToolSession.maximumTimerDurationSeconds else { throw WorkspaceError.invalidTimerDuration }
+                try TimeToolSession.validateTimerDuration(value)
                 if let owner, durationSeconds != nil {
-                    try execute("INSERT INTO task_timer_settings (task_id, duration_seconds) VALUES (?, ?) ON CONFLICT(task_id) DO UPDATE SET duration_seconds = excluded.duration_seconds", [.text(owner.id.uuidString), .number(value)])
+                    try setTimerDuration(taskID: owner.id, seconds: value)
                 }
             }
             var session = TimeToolSession(
@@ -828,7 +860,7 @@ final class SQLiteDatabase {
                     guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
                     return Int(sqlite3_column_int64(query, 0))
                 }
-                session.pomodoro = PomodoroState(cycleCount: cycleCount)
+                session.pomodoro = PomodoroState(cycleCount: cycleCount, parameters: try pomodoroParameters(taskID: owner?.id))
             }
             try saveTimeToolSession(session)
         }
@@ -1026,13 +1058,13 @@ final class SQLiteDatabase {
     }
 
     func creationDraft() throws -> CreationDraft? {
-        try statement("SELECT title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen, recurrence, series_start, labels_were_chosen, children FROM creation_draft WHERE id = 1") { query in
+        try statement("SELECT title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen, recurrence, series_start, labels_were_chosen, children, pomodoro_parameters, timer_duration_seconds FROM creation_draft WHERE id = 1") { query in
             let result = sqlite3_step(query)
             if result == SQLITE_DONE { return nil }
             guard result == SQLITE_ROW, let priority = TaskPriority(rawValue: text(query, 1)) else {
                 throw failure()
             }
-            return CreationDraft(title: text(query, 0), priority: priority, projectID: UUID(uuidString: text(query, 2)), projectWasChosen: sqlite3_column_int(query, 3) != 0, plannedDay: sqlite3_column_type(query, 6) == SQLITE_NULL ? nil : text(query, 6), dayWasChosen: sqlite3_column_int(query, 7) != 0, note: TaskNote(rtf: blob(query, 4), plainText: text(query, 5)), labelIDs: try labelIDs(taskID: nil), labelsWereChosen: sqlite3_column_int(query, 10) != 0, recurrence: try decodeRecurrence(query, 8), seriesStart: sqlite3_column_type(query, 9) == SQLITE_NULL ? nil : text(query, 9), children: try visibleDraftChildren(JSONDecoder().decode([SubtaskDraft].self, from: blob(query, 11))))
+            return CreationDraft(title: text(query, 0), priority: priority, projectID: UUID(uuidString: text(query, 2)), projectWasChosen: sqlite3_column_int(query, 3) != 0, plannedDay: sqlite3_column_type(query, 6) == SQLITE_NULL ? nil : text(query, 6), dayWasChosen: sqlite3_column_int(query, 7) != 0, note: TaskNote(rtf: blob(query, 4), plainText: text(query, 5)), labelIDs: try labelIDs(taskID: nil), labelsWereChosen: sqlite3_column_int(query, 10) != 0, recurrence: try decodeRecurrence(query, 8), seriesStart: sqlite3_column_type(query, 9) == SQLITE_NULL ? nil : text(query, 9), children: try visibleDraftChildren(JSONDecoder().decode([SubtaskDraft].self, from: blob(query, 11))), pomodoroParameters: sqlite3_column_type(query, 12) == SQLITE_NULL ? nil : try JSONDecoder().decode(PomodoroParameters.self, from: blob(query, 12)), timerDurationSeconds: sqlite3_column_type(query, 13) == SQLITE_NULL ? nil : sqlite3_column_double(query, 13))
         }
     }
 
@@ -1060,7 +1092,7 @@ final class SQLiteDatabase {
                     INSERT INTO creation_draft (id, title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen, labels_were_chosen, recurrence, series_start) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET title = excluded.title, priority = excluded.priority, project_id = excluded.project_id, project_was_chosen = excluded.project_was_chosen, note_rtf = excluded.note_rtf, note_text = excluded.note_text, planned_day = excluded.planned_day, day_was_chosen = excluded.day_was_chosen, labels_were_chosen = excluded.labels_were_chosen, recurrence = excluded.recurrence, series_start = excluded.series_start
                     """, [.text(draft.title), .text(draft.priority.rawValue), draft.projectID.map { .text($0.uuidString) } ?? .null, .number(draft.projectWasChosen ? 1 : 0), .blob(draft.note.rtf), .text(draft.note.plainText), draft.plannedDay.map { .text($0) } ?? .null, .number(draft.dayWasChosen ? 1 : 0), .number(draft.labelsWereChosen ? 1 : 0), try encodedRecurrence(draft.recurrence), draft.seriesStart.map { .text($0) } ?? .null])
-                try execute("UPDATE creation_draft SET children = ? WHERE id = 1", [.blob(try JSONEncoder().encode(persistedChildren))])
+                try execute("UPDATE creation_draft SET children = ?, pomodoro_parameters = ?, timer_duration_seconds = ? WHERE id = 1", [.blob(try JSONEncoder().encode(persistedChildren)), try draft.pomodoroParameters.map { .blob(try JSONEncoder().encode($0)) } ?? .null, draft.timerDurationSeconds.map { .number($0) } ?? .null])
                 if labelsChanged {
                     try execute("DELETE FROM draft_labels WHERE draft_id = 1")
                     for labelID in draft.labelIDs {
@@ -1160,5 +1192,79 @@ final class SQLiteDatabase {
     private func failure() -> WorkspaceError {
         let message = sqlite3_errmsg(connection).map { String(cString: $0) } ?? "SQLite could not be opened"
         return .storage(message)
+    }
+}
+
+extension SQLiteDatabase {
+    private func migrateProfiles() throws {
+        try transaction {
+            try execute("CREATE TABLE pomodoro_profiles (id TEXT PRIMARY KEY, title TEXT NOT NULL, parameters BLOB NOT NULL)")
+            try execute("CREATE TABLE pomodoro_selection (id INTEGER PRIMARY KEY CHECK(id = 1), profile_id TEXT NOT NULL REFERENCES pomodoro_profiles(id))")
+            try execute("CREATE TABLE task_pomodoro_settings (task_id TEXT PRIMARY KEY REFERENCES tasks(id), parameters BLOB NOT NULL)")
+            try execute("ALTER TABLE creation_draft ADD COLUMN pomodoro_parameters BLOB")
+            try execute("ALTER TABLE creation_draft ADD COLUMN timer_duration_seconds REAL")
+            let profile = PomodoroProfile(id: UUID(), title: "Обычный", parameters: PomodoroParameters())
+            try savePomodoroProfile(profile)
+            try selectPomodoroProfile(id: profile.id)
+            try execute("PRAGMA user_version = 14")
+        }
+    }
+
+    func pomodoroProfiles() throws -> [PomodoroProfile] {
+        try statement("SELECT id, title, parameters FROM pomodoro_profiles ORDER BY rowid") { query in
+            var profiles: [PomodoroProfile] = []
+            var result = sqlite3_step(query)
+            while result == SQLITE_ROW {
+                guard let id = UUID(uuidString: text(query, 0)) else { throw failure() }
+                profiles.append(PomodoroProfile(id: id, title: text(query, 1), parameters: try JSONDecoder().decode(PomodoroParameters.self, from: blob(query, 2))))
+                result = sqlite3_step(query)
+            }
+            guard result == SQLITE_DONE else { throw failure() }
+            return profiles
+        }
+    }
+
+    func savePomodoroProfile(_ profile: PomodoroProfile) throws {
+        try execute("INSERT INTO pomodoro_profiles VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET title = excluded.title, parameters = excluded.parameters", [.text(profile.id.uuidString), .text(profile.title), .blob(try JSONEncoder().encode(profile.parameters))])
+    }
+
+    func selectedPomodoroProfileID() throws -> UUID? {
+        try statement("SELECT profile_id FROM pomodoro_selection WHERE id = 1") { query in
+            guard sqlite3_step(query) == SQLITE_ROW else { return nil }
+            return UUID(uuidString: text(query, 0))
+        }
+    }
+
+    func selectPomodoroProfile(id: UUID) throws {
+        guard try pomodoroProfiles().contains(where: { $0.id == id }) else { throw WorkspaceError.occurrenceNotFound }
+        try execute("INSERT INTO pomodoro_selection VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET profile_id = excluded.profile_id", [.text(id.uuidString)])
+    }
+
+    func pomodoroOverride(taskID: UUID) throws -> PomodoroParameters? {
+        try statement("SELECT parameters FROM task_pomodoro_settings WHERE task_id = ?", [.text(taskID.uuidString)]) { query in
+            let result = sqlite3_step(query)
+            if result == SQLITE_DONE { return nil }
+            guard result == SQLITE_ROW else { throw failure() }
+            return try JSONDecoder().decode(PomodoroParameters.self, from: blob(query, 0))
+        }
+    }
+
+    func pomodoroParameters(taskID: UUID?, profileParameters: PomodoroParameters? = nil) throws -> PomodoroParameters {
+        if let taskID {
+            guard let task = try records().first(where: { $0.id == taskID }) else { throw WorkspaceError.occurrenceNotFound }
+            if let own = try pomodoroOverride(taskID: taskID) { return own }
+            if let parent = task.parentTaskID { return try pomodoroParameters(taskID: parent, profileParameters: profileParameters) }
+        }
+        if let profileParameters { return profileParameters }
+        let selected = try selectedPomodoroProfileID()
+        return try pomodoroProfiles().first { $0.id == selected }?.parameters ?? PomodoroParameters()
+    }
+
+    func setPomodoroParameters(taskID: UUID, parameters: PomodoroParameters?) throws {
+        if let parameters {
+            try execute("INSERT INTO task_pomodoro_settings VALUES (?, ?) ON CONFLICT(task_id) DO UPDATE SET parameters = excluded.parameters", [.text(taskID.uuidString), .blob(try JSONEncoder().encode(parameters))])
+        } else {
+            try execute("DELETE FROM task_pomodoro_settings WHERE task_id = ?", [.text(taskID.uuidString)])
+        }
     }
 }
