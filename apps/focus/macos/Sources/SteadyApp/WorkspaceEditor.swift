@@ -49,11 +49,13 @@ final class WorkspaceEditor {
 
     @discardableResult
     func beginSearch() -> Bool {
-        if isSearching { searchFocusRequest += 1; return true }
         guard saveDetails(), !isCreating || saveDraft() else { return false }
-        searchOrigin = navigation
-        searchOriginWasCreating = isCreating
+        if !isSearching {
+            searchOrigin = navigation
+            searchOriginWasCreating = isCreating
+        }
         isCreating = false
+        detailsVisible = false
         screen = .tasks
         searchFocusRequest += 1
         return true
@@ -223,6 +225,7 @@ final class WorkspaceEditor {
         // A failed save remains in this model even when the panel is hidden.
         _ = saveDraft()
         isCreating = false
+        if isSearching { searchFocusRequest += 1 }
     }
 
     @discardableResult
@@ -314,7 +317,10 @@ final class WorkspaceEditor {
     }
 
     func closeDetails() {
-        if saveDetails() { detailsVisible = false }
+        if saveDetails() {
+            detailsVisible = false
+            if isSearching { searchFocusRequest += 1 }
+        }
     }
 
     @discardableResult

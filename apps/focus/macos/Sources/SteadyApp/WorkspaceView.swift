@@ -30,7 +30,7 @@ struct WorkspaceView: View {
                 header
                 Divider()
                 HStack(spacing: 0) {
-                    if editor.sidebarVisible && !(isNarrow && panelVisible && !editor.isSearching) {
+                    if editor.sidebarVisible && !(isNarrow && panelVisible) {
                         sidebar
                         Divider()
                     }
@@ -41,10 +41,10 @@ struct WorkspaceView: View {
                                 RunHistory(results: editor.workspace?.timeToolResults ?? [])
                             }.padding(26).frame(maxWidth: .infinity, alignment: .leading)
                         }
-                    } else if !(isNarrow && panelVisible && !editor.isSearching) {
+                    } else if !(isNarrow && panelVisible) {
                         taskList
                     }
-                    if editor.workspace != nil, editor.screen == .tasks, !(isNarrow && editor.isSearching) {
+                    if editor.workspace != nil, editor.screen == .tasks {
                         if editor.isCreating {
                             Divider()
                             CreationPanel(editor: editor, isPage: isNarrow)
