@@ -398,6 +398,20 @@ private struct CreationPanel: View {
         ScrollView { panelContent.frame(maxWidth: .infinity) }
     }
 
+    /// SwiftUI can retain a child binding after the draft is consumed or a sibling is removed.
+    /// Resolve identity on each access so the old view cannot index a changed array.
+    private func childBinding<Value>(_ child: SubtaskDraft, _ keyPath: WritableKeyPath<SubtaskDraft, Value>, replacingLabels: Bool = false) -> Binding<Value> {
+        Binding(
+            get: { (editor.draftChildren.first { $0.id == child.id } ?? child)[keyPath: keyPath] },
+            set: { value in
+                guard let index = editor.draftChildren.firstIndex(where: { $0.id == child.id }) else { return }
+                editor.draftChildren[index][keyPath: keyPath] = value
+                if replacingLabels { editor.draftChildLabelsNeedReplacement.insert(child.id) }
+                editor.saveDraft()
+            }
+        )
+    }
+
     private var panelContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -454,14 +468,14 @@ private struct CreationPanel: View {
             }
             VStack(alignment: .leading, spacing: 12) {
                 Text("Подзадачи").font(.headline)
-                ForEach(Array(editor.draftChildren.enumerated()), id: \.element.id) { index, child in
+                ForEach(editor.draftChildren) { child in
                     DisclosureGroup(child.title.isEmpty ? "Новая подзадача" : child.title) {
-                        TextField("Название подзадачи", text: Binding(get: { editor.draftChildren[index].title }, set: { editor.draftChildren[index].title = $0; editor.saveDraft() }))
+                        TextField("Название подзадачи", text: childBinding(child, \.title))
                         if let workspace = editor.workspace {
-                            LabelField(workspace: workspace, selection: Binding(get: { editor.draftChildren[index].labelIDs }, set: { editor.draftChildren[index].labelIDs = $0; editor.draftChildLabelsNeedReplacement.insert(child.id); editor.saveDraft() }))
+                            LabelField(workspace: workspace, selection: childBinding(child, \.labelIDs, replacingLabels: true))
                         }
-                        TaskNoteEditor(note: Binding(get: { editor.draftChildren[index].note }, set: { editor.draftChildren[index].note = $0; editor.saveDraft() }), accessibilityID: "child-note-\(child.id)").frame(height: 130)
-                        Button("Удалить подзадачу") { editor.draftChildren.remove(at: index); editor.saveDraft() }
+                        TaskNoteEditor(note: childBinding(child, \.note), accessibilityID: "child-note-\(child.id)").frame(height: 130)
+                        Button("Удалить подзадачу") { editor.draftChildren.removeAll { $0.id == child.id }; editor.saveDraft() }
                     }
                 }
                 Button("Добавить подзадачу") { editor.draftChildren.append(SubtaskDraft()); editor.saveDraft() }
