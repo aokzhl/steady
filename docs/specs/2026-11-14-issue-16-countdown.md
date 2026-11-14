@@ -2,6 +2,7 @@
 
 Uses the accepted TaskWorkspace boundary, real local SQLite, and injected now/calendar. An ordinary timer shares the existing one-session slot and run/segment result identity with the stopwatch.
 
+- Timer durations must be positive and fit the signed native integer seconds representation (the largest supported Double is `Double(Int.max).nextDown`). This is a technical representation bound, not a day-based product limit. Launch and adjustment reject overflow before committing; the prompt validates the same bound. All duration labels use checked integer conversion and full-width hours.
 - The shared tools menu starts Timer. An unset duration opens a minutes prompt; Cancel starts nothing. Confirm saves that duration for this task and starts atomically. Subsequent task launches reuse it. Free launches prompt each time.
 - The session bar shows remaining time separately from actual active work, with Pause/Resume/Stop and owner navigation. Pause excludes waiting from both measured work and countdown.
 - Hovering the time or pressing the plus/minus control opens an integer −20…+20 minute stepper with a live resulting-time preview. Apply adds to the current remainder, clamps at zero, retains the selected delta for repeated Apply, and preserves the owner/run/running-or-paused state. It never changes the saved task duration.
