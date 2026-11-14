@@ -1076,6 +1076,7 @@ private struct ToolMenu: View {
     @Bindable var editor: WorkspaceEditor
     let task: TaskRecord?
     var compact = false
+    @State private var profilesVisible = false
 
     private var timerTitle: String {
         guard let task else { return "Таймер · Не задано" }
@@ -1091,10 +1092,11 @@ private struct ToolMenu: View {
         Menu {
             Button(timerTitle) { editor.requestTimer(task) }
                 .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil || task?.skippedAt != nil)
-            Button("Помодоро · 25 / 5 / 15 · после 4") { editor.startPomodoro(task) }
+            Button("Помодоро · " + pomodoroLabel((try? editor.workspace?.pomodoroParameters(taskID: task?.id)) ?? PomodoroParameters())) { editor.startPomodoro(task) }
                 .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil || task?.skippedAt != nil)
             Button("Секундомер · Счёт вверх") { editor.startStopwatch(task) }
                 .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil || task?.skippedAt != nil)
+            Button("Профили помодоро…") { profilesVisible = true }
             if editor.workspace?.activeSession != nil {
                 Divider()
                 Text("Сначала остановите текущую сессию (в том числе на паузе)")
@@ -1132,6 +1134,9 @@ private struct ToolMenu: View {
         .fixedSize()
         .help("Выбрать инструмент времени" + (task == nil ? " без задачи" : ""))
         .accessibilityIdentifier(task.map { "task-tools-\($0.id)" } ?? "free-tools")
+        .sheet(isPresented: $profilesVisible) {
+            if let workspace = editor.workspace { PomodoroProfilesView(workspace: workspace) }
+        }
     }
 }
 
@@ -1281,7 +1286,7 @@ private struct RunHistory: View {
     }
 }
 
-private func durationLabel(_ seconds: TimeInterval) -> String {
+func durationLabel(_ seconds: TimeInterval) -> String {
     guard seconds.isFinite, let value = Int(exactly: max(0, seconds).rounded(.towardZero)) else { return "—" }
     let hours = String(value / 3600)
     return (hours.count < 2 ? "0" + hours : hours) + String(format: ":%02d:%02d", (value % 3600) / 60, value % 60)

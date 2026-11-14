@@ -137,14 +137,19 @@ public struct PomodoroParameters: Codable, Equatable, Sendable {
     public let autoBreak: Bool
     public let autoNext: Bool
 
-    public init() {
-        workSeconds = 1500
-        shortRestSeconds = 300
-        longRestSeconds = 900
-        longRestAfter = 4
+    public init(workSeconds: TimeInterval = 1500, shortRestSeconds: TimeInterval = 300, longRestSeconds: TimeInterval = 900, longRestAfter: Int = 4) {
+        self.workSeconds = workSeconds
+        self.shortRestSeconds = shortRestSeconds
+        self.longRestSeconds = longRestSeconds
+        self.longRestAfter = longRestAfter
         autoBreak = false
         autoNext = false
     }
+
+    func validate() throws {
+        guard [workSeconds, shortRestSeconds, longRestSeconds].allSatisfy({ $0.isFinite && $0 > 0 && $0 <= TimeToolSession.maximumTimerDurationSeconds }), longRestAfter > 0 else { throw WorkspaceError.invalidTimerDuration }
+    }
+
 }
 
 public enum PomodoroStage: String, Codable, Sendable {
@@ -165,8 +170,8 @@ public struct PomodoroState: Codable, Equatable, Sendable {
     public internal(set) var restStartIndex = 0
     public internal(set) var restIsLong = false
 
-    init(cycleCount: Int) {
-        parameters = PomodoroParameters()
+    init(cycleCount: Int, parameters: PomodoroParameters = PomodoroParameters()) {
+        self.parameters = parameters
         focusID = UUID()
         self.cycleCount = cycleCount
         focusBudgetSeconds = parameters.workSeconds
@@ -263,4 +268,10 @@ extension TimeToolSession {
         let boundary = max(instant, max(segments.last?.endedAt ?? startedAt, state.restSegments.last?.endedAt ?? startedAt))
         segments.append(WorkSegment(id: UUID(), startedAt: boundary, endedAt: nil))
     }
+}
+
+public struct PomodoroProfile: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let title: String
+    public let parameters: PomodoroParameters
 }

@@ -112,6 +112,7 @@ public struct SubtaskDraft: Identifiable, Equatable, Sendable, Codable {
     public var title: String
     public var note: TaskNote
     public var labelIDs: Set<UUID>
+    public var pomodoroParameters: PomodoroParameters? = nil
     public init(id: UUID = UUID(), title: String = "", note: TaskNote = .empty, labelIDs: Set<UUID> = []) {
         self.id = id; self.title = title; self.note = note; self.labelIDs = labelIDs
     }
@@ -130,8 +131,10 @@ public struct CreationDraft: Equatable, Sendable {
     public let recurrence: TaskRecurrence?
     public let seriesStart: String?
     public let children: [SubtaskDraft]
+    public let pomodoroParameters: PomodoroParameters?
 
-    public init(title: String = "", priority: TaskPriority = .none, projectID: UUID? = nil, projectWasChosen: Bool = false, plannedDay: String? = nil, dayWasChosen: Bool = false, note: TaskNote = .empty, labelIDs: Set<UUID> = [], labelsWereChosen: Bool = false, recurrence: TaskRecurrence? = nil, seriesStart: String? = nil, children: [SubtaskDraft] = []) {
+    public init(title: String = "", priority: TaskPriority = .none, projectID: UUID? = nil, projectWasChosen: Bool = false, plannedDay: String? = nil, dayWasChosen: Bool = false, note: TaskNote = .empty, labelIDs: Set<UUID> = [], labelsWereChosen: Bool = false, recurrence: TaskRecurrence? = nil, seriesStart: String? = nil, children: [SubtaskDraft] = [], pomodoroParameters: PomodoroParameters? = nil) {
+        self.pomodoroParameters = pomodoroParameters
         self.children = children
         self.recurrence = recurrence
         self.seriesStart = seriesStart
@@ -147,13 +150,15 @@ public struct CreationDraft: Equatable, Sendable {
     }
 
     public var isEmpty: Bool {
-        children.isEmpty && title.isEmpty && priority == .none && projectID == nil && !projectWasChosen && note == .empty && plannedDay == nil && !dayWasChosen && recurrence == nil && seriesStart == nil && labelIDs.isEmpty && !labelsWereChosen
+        pomodoroParameters == nil && children.isEmpty && title.isEmpty && priority == .none && projectID == nil && !projectWasChosen && note == .empty && plannedDay == nil && !dayWasChosen && recurrence == nil && seriesStart == nil && labelIDs.isEmpty && !labelsWereChosen
     }
 }
 
 @MainActor
 @Observable
 public final class TaskWorkspace {
+    public private(set) var pomodoroProfiles: [PomodoroProfile] = []
+    public private(set) var selectedPomodoroProfileID: UUID?
     public private(set) var lastDeletedLabel: LabelRecord?
     public private(set) var labels: [LabelRecord] = []
     public private(set) var projects: [ProjectRecord] = []
@@ -176,6 +181,8 @@ public final class TaskWorkspace {
         self.dayContext = DayContext(date: now(), calendar: calendar())
         self.database = try SQLiteDatabase(url: databaseURL)
         self.preferences = try database.workspacePreferences()
+        self.pomodoroProfiles = try database.pomodoroProfiles()
+        self.selectedPomodoroProfileID = try database.selectedPomodoroProfileID()
         self.lastDeletedLabel = try database.lastDeletedLabel()
         self.labels = try database.labels()
         self.projects = try database.projects()
@@ -347,14 +354,14 @@ public final class TaskWorkspace {
     public func prepareCreationDraft(projectID: UUID? = nil, plannedDay: String? = nil, labelIDs: Set<UUID> = []) throws -> CreationDraft {
         let saved = creationDraft ?? CreationDraft()
         let hasSavedInput = !saved.title.isEmpty || saved.priority != .none || saved.projectID != nil
-            || saved.projectWasChosen || saved.note != .empty || saved.dayWasChosen || saved.recurrence != nil || !saved.labelIDs.isEmpty || saved.labelsWereChosen || !saved.children.isEmpty
+            || saved.projectWasChosen || saved.note != .empty || saved.dayWasChosen || saved.recurrence != nil || !saved.labelIDs.isEmpty || saved.labelsWereChosen || !saved.children.isEmpty || saved.pomodoroParameters != nil
         let prepared = CreationDraft(
             title: saved.title, priority: saved.priority,
             projectID: creationDraft != nil ? saved.projectID : projectID,
             projectWasChosen: saved.projectWasChosen,
             plannedDay: hasSavedInput ? saved.plannedDay : plannedDay,
             dayWasChosen: saved.dayWasChosen, note: saved.note,
-            labelIDs: creationDraft != nil ? saved.labelIDs : labelIDs, labelsWereChosen: saved.labelsWereChosen, recurrence: saved.recurrence, seriesStart: saved.seriesStart, children: saved.children
+            labelIDs: creationDraft != nil ? saved.labelIDs : labelIDs, labelsWereChosen: saved.labelsWereChosen, recurrence: saved.recurrence, seriesStart: saved.seriesStart, children: saved.children, pomodoroParameters: saved.pomodoroParameters
         )
         try saveCreationDraft(prepared)
         return prepared
@@ -362,6 +369,8 @@ public final class TaskWorkspace {
 
     /// Set `replacingLabels` for an explicit picker choice, including an empty selection.
     public func saveCreationDraft(_ draft: CreationDraft, replacingLabels: Bool = false, replacingChildLabels: Set<UUID> = []) throws {
+        try draft.pomodoroParameters?.validate()
+        for child in draft.children { try child.pomodoroParameters?.validate() }
         try validateDay(draft.plannedDay)
         try validateDay(draft.seriesStart)
         try draft.recurrence?.validate()
@@ -458,6 +467,27 @@ public final class TaskWorkspace {
     public var restRemainingSeconds: TimeInterval? {
         guard let state = activeSession?.pomodoro, state.stage == .rest else { return nil }
         return state.restRemaining(at: now())
+    }
+
+    @discardableResult
+    public func savePomodoroProfile(id: UUID? = nil, title: String, parameters: PomodoroParameters) throws -> PomodoroProfile {
+        try parameters.validate()
+        let profile = PomodoroProfile(id: id ?? UUID(), title: try validatedTitle(title), parameters: parameters)
+        try database.savePomodoroProfile(profile)
+        pomodoroProfiles = try database.pomodoroProfiles()
+        return profile
+    }
+
+    public func selectPomodoroProfile(id: UUID) throws {
+        try database.selectPomodoroProfile(id: id)
+        selectedPomodoroProfileID = id
+    }
+
+    public func pomodoroOverride(taskID: UUID) throws -> PomodoroParameters? { try database.pomodoroOverride(taskID: taskID) }
+    public func pomodoroParameters(taskID: UUID? = nil) throws -> PomodoroParameters { try database.pomodoroParameters(taskID: taskID) }
+    public func setPomodoroParameters(taskID: UUID, parameters: PomodoroParameters?) throws {
+        try parameters?.validate()
+        try database.setPomodoroParameters(taskID: taskID, parameters: parameters)
     }
 
     public func startPomodoro(occurrenceID: UUID? = nil) throws {
