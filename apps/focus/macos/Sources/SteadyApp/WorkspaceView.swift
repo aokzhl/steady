@@ -516,6 +516,7 @@ private struct CreationPanel: View {
     @FocusState private var titleFocused: Bool
     var isPage = false
     @State private var confirmingDiscard = false
+    @State private var scheduleExpanded = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -525,7 +526,10 @@ private struct CreationPanel: View {
             creationFooter.padding(.horizontal, 20).frame(height: 56)
         }
         .background(Color(red: 31/255, green: 29/255, blue: 38/255))
-        .onExitCommand { editor.closeCreation() }
+        .onExitCommand {
+            if scheduleExpanded { scheduleExpanded = false }
+            else { editor.closeCreation() }
+        }
     }
 
     /// SwiftUI can retain a child binding after the draft is consumed or a sibling is removed.
@@ -556,7 +560,7 @@ private struct CreationPanel: View {
                     .accessibilityLabel("Название задачи").accessibilityIdentifier("task-title")
             }
             Divider().padding(.top, 24)
-            SchedulePopover(summary: editor.draftRecurrence.map(recurrenceLabel) ?? dayLabel(editor.draftDay, today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow)) {
+            SchedulePopover(summary: editor.draftRecurrence.map(recurrenceLabel) ?? dayLabel(editor.draftDay, today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow), expanded: $scheduleExpanded) {
                 RecurrenceField(selection: Binding(get: { editor.draftRecurrence }, set: { editor.changeDraftRecurrence($0) }))
                 if editor.draftRecurrence != nil {
                     ScheduleField(day: Binding(get: { editor.draftSeriesStart ?? editor.workspace?.today }, set: {
@@ -643,6 +647,7 @@ private struct DetailPanel: View {
     @Bindable var editor: WorkspaceEditor
     let task: TaskRecord
     var isPage = false
+    @State private var scheduleExpanded = false
     @FocusState private var titleFocused: Bool
 
     var body: some View {
@@ -676,7 +681,7 @@ private struct DetailPanel: View {
                 }
                 Text("Проект и расписание — как у родителя. Для своего расписания создайте отдельную задачу.").font(.caption).foregroundStyle(.secondary)
             } else {
-            SchedulePopover(summary: task.recurrence.map(recurrenceLabel) ?? dayLabel(task.plannedDay, today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow)) {
+            SchedulePopover(summary: task.recurrence.map(recurrenceLabel) ?? dayLabel(task.plannedDay, today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow), expanded: $scheduleExpanded) {
                 RecurrenceField(selection: Binding(get: { editor.detailRecurrence }, set: { editor.changeRecurrence($0) }), allowsNoRepeat: task.seriesStart == nil)
                 if editor.detailRecurrence != task.recurrence {
                     Button("Применить: этот и будущие") { editor.saveRecurrence() }
@@ -756,7 +761,10 @@ private struct DetailPanel: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 24).padding(.vertical, 16)
-        .onExitCommand { editor.closeDetails() }
+        .onExitCommand {
+            if scheduleExpanded { scheduleExpanded = false }
+            else { editor.closeDetails() }
+        }
     }
 }
 
@@ -820,8 +828,8 @@ private struct PanelHeader: View {
 
 private struct SchedulePopover<Content: View>: View {
     let summary: String
+    @Binding var expanded: Bool
     @ViewBuilder var content: Content
-    @State private var expanded = false
 
     var body: some View {
         Button { expanded = true } label: {
@@ -835,7 +843,39 @@ private struct SchedulePopover<Content: View>: View {
                 content
                 HStack { Spacer(); Button("Готово") { expanded = false } }
             }.padding(20).frame(width: 330)
+                .background(PopoverEscapeFocus(dismiss: { expanded = false }))
                 .onExitCommand { expanded = false }
+        }
+    }
+}
+
+/// The popover owns Escape immediately, before a user clicks one of its fields.
+/// This responder is local to the popover and installs no event monitor.
+private struct PopoverEscapeFocus: NSViewRepresentable {
+    let dismiss: () -> Void
+    func makeNSView(context: Context) -> PopoverEscapeView { PopoverEscapeView() }
+    func updateNSView(_ view: PopoverEscapeView, context: Context) { view.dismiss = dismiss }
+}
+
+private final class PopoverEscapeView: NSView {
+    var dismiss: (() -> Void)?
+    override var acceptsFirstResponder: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window else { return }
+            window.makeKey()
+            window.makeFirstResponder(self)
+        }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 && event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+            dismiss?()
+        } else {
+            super.keyDown(with: event)
         }
     }
 }
