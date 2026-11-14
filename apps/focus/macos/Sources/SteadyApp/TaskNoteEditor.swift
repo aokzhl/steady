@@ -232,7 +232,8 @@ final class NoteTextView: NSTextView {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command {
+        if window?.firstResponder === self,
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command {
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "b": toggleBold(); return true
             case "k": insertLink(); return true
