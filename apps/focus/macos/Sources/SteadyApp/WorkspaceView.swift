@@ -13,6 +13,8 @@ struct WorkspaceView: View {
     @Bindable var editor: WorkspaceEditor
     @State private var sidebarVisible = true
     @State private var projectEditorVisible = false
+    @State private var labelEditorVisible = false
+    @State private var editingLabel: LabelRecord?
     @State private var editingProject: ProjectRecord?
     @State private var historyVisible = false
     @Environment(\.scenePhase) private var scenePhase
@@ -53,6 +55,9 @@ struct WorkspaceView: View {
         .tint(Palette.accent)
         .sheet(isPresented: $projectEditorVisible) {
             ProjectEditorPanel(workspace: editor.workspace, project: editingProject)
+        }
+        .sheet(isPresented: $labelEditorVisible) {
+            LabelEditorPanel(workspace: editor.workspace, label: editingLabel)
         }
         .task { editor.openWorkspace() }
         .onAppear { editor.reopenWindow = { openWindow(id: "main") } }
@@ -103,7 +108,7 @@ struct WorkspaceView: View {
                 Label("Все задачи", systemImage: "list.bullet")
                     .font(.system(size: 13, weight: .medium))
                     .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(editor.selectedProjectID == nil ? Palette.accent.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                    .background(editor.selectedProjectID == nil && editor.selectedLabelID == nil ? Palette.accent.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
             }
             .buttonStyle(.plain)
             HStack {
@@ -132,6 +137,31 @@ struct WorkspaceView: View {
                             Button("Переименовать проект") { editingProject = project; projectEditorVisible = true }
                         }
                     }
+                    Divider().padding(.vertical, 10)
+                    HStack {
+                        Text("Метки").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Spacer()
+                        Button { editingLabel = nil; labelEditorVisible = true } label: { Image(systemName: "plus") }
+                            .buttonStyle(.plain).accessibilityLabel("Создать метку")
+                            .disabled(editor.workspace == nil)
+                    }
+                    .padding(.bottom, 8)
+                    ForEach(editor.workspace?.labels ?? []) { label in
+                        Button { editor.selectLabel(label.id) } label: {
+                            HStack {
+                                ProjectMarker(color: label.color)
+                                Text(label.title).lineLimit(2)
+                                Spacer()
+                            }
+                            .font(.system(size: 12)).padding(10)
+                            .background(editor.selectedLabelID == label.id ? Palette.accent.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button("Переименовать метку") { editingLabel = label; labelEditorVisible = true }
+                            Button("Удалить метку", role: .destructive) { editor.deleteLabel(label) }
+                        }
+                    }
                 }
             }
             Spacer()
@@ -147,11 +177,17 @@ struct WorkspaceView: View {
     private var taskList: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
-                Text(editor.workspace?.projects.first { $0.id == editor.selectedProjectID }?.title ?? "Все задачи")
+                Text(editor.workspace?.labels.first { $0.id == editor.selectedLabelID }?.title ?? editor.workspace?.projects.first { $0.id == editor.selectedProjectID }?.title ?? "Все задачи")
                     .font(.system(size: 24, weight: .semibold))
                 if let project = editor.workspace?.projects.first(where: { $0.id == editor.selectedProjectID }) {
                     Button { editingProject = project; projectEditorVisible = true } label: { Image(systemName: "pencil") }
                         .buttonStyle(.plain).accessibilityLabel("Переименовать проект")
+                }
+                if let label = editor.workspace?.labels.first(where: { $0.id == editor.selectedLabelID }) {
+                    Button { editingLabel = label; labelEditorVisible = true } label: { Image(systemName: "pencil") }
+                        .buttonStyle(.plain).accessibilityLabel("Переименовать метку")
+                    Button { editor.deleteLabel(label) } label: { Image(systemName: "trash") }
+                        .buttonStyle(.plain).accessibilityLabel("Удалить метку")
                 }
                 Spacer()
                 Label("Список", systemImage: "list.bullet")
@@ -176,6 +212,13 @@ struct WorkspaceView: View {
                 .keyboardShortcut("n", modifiers: .command)
                 .accessibilityIdentifier("new-task")
 
+                if let removed = workspace.lastDeletedLabel {
+                    HStack {
+                        Text("Метка «\(removed.title)» удалена").font(.system(size: 12)).foregroundStyle(.secondary)
+                        Button("Отменить удаление", action: editor.undoLabelDeletion)
+                            .font(.system(size: 12))
+                    }
+                }
                 if let actionError = editor.actionError {
                     StorageNotice(message: actionError)
                     Button("Обновить список", action: editor.reload)
@@ -187,11 +230,11 @@ struct WorkspaceView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
                         let open = workspace.tasks.filter {
-                            $0.completedAt == nil && (editor.selectedProjectID == nil || $0.projectID == editor.selectedProjectID)
+                            $0.completedAt == nil && editor.matchesContext($0)
                             && (editor.contextDay == nil || $0.plannedDay == editor.contextDay || (editor.period == .today && $0.plannedDay.map { $0 < workspace.today } == true))
                         }
                         let completed = workspace.tasks.filter {
-                            $0.completedAt != nil && (editor.selectedProjectID == nil || $0.projectID == editor.selectedProjectID)
+                            $0.completedAt != nil && editor.matchesContext($0)
                             && (editor.contextDay == nil || (editor.period == .today ? workspace.completedToday.contains($0) : $0.plannedDay == editor.contextDay))
                         }
                         if open.isEmpty, completed.isEmpty {
@@ -276,6 +319,9 @@ struct WorkspaceView: View {
                         .strikethrough(task.completedAt != nil)
                         .foregroundStyle(task.completedAt == nil ? Color.primary : Color.secondary)
                         .lineLimit(3)
+                    if let workspace = editor.workspace, !task.labelIDs.isEmpty {
+                        LabelChips(labels: workspace.labels, selection: task.labelIDs)
+                    }
                     if task.priority != .none {
                         Label(task.priority.label, systemImage: "flag")
                             .font(.system(size: 10)).foregroundStyle(.secondary)
@@ -336,6 +382,12 @@ private struct CreationPanel: View {
                 get: { editor.draftProjectID },
                 set: { editor.draftProjectID = $0; editor.draftProjectWasChosen = true; editor.saveDraft() }
             ))
+            if let workspace = editor.workspace {
+                LabelField(workspace: workspace, selection: Binding(
+                    get: { editor.draftLabelIDs },
+                    set: { editor.draftLabelIDs = $0; editor.draftLabelsWereChosen = true; editor.saveDraft() }
+                ))
+            }
             PriorityField(selection: Binding(
                 get: { editor.draftPriority },
                 set: { editor.draftPriority = $0; editor.saveDraft() }
@@ -410,6 +462,11 @@ private struct DetailPanel: View {
             ProjectField(projects: editor.workspace?.projects ?? [], selection: Binding(
                 get: { editor.detailProjectID }, set: { editor.changeProject($0) }
             ))
+            if let workspace = editor.workspace {
+                LabelField(workspace: workspace, selection: Binding(
+                    get: { editor.detailLabelIDs }, set: { editor.changeLabels($0) }
+                ))
+            }
             PriorityField(selection: Binding(get: { editor.detailPriority }, set: { editor.changePriority($0) }))
             VStack(alignment: .leading, spacing: 8) {
                 Text("Заметка").font(.system(size: 12)).foregroundStyle(.secondary)

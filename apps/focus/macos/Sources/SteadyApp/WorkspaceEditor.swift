@@ -32,13 +32,18 @@ final class WorkspaceEditor {
         case .tomorrow: workspace?.tomorrow
         }
     }
+    private var labelsError: String?
+    var selectedLabelID: UUID?
+    var draftLabelIDs: Set<UUID> = []
+    var draftLabelsWereChosen = false
+    var detailLabelIDs: Set<UUID> = []
     var selectedProjectID: UUID?
     var draftProjectID: UUID?
     var draftProjectWasChosen = false
     var detailProjectID: UUID?
 
     var detailError: String? {
-        let messages = [titleError, priorityError, projectError, noteError, dayError].compactMap { $0 }
+        let messages = [titleError, priorityError, projectError, noteError, dayError, labelsError].compactMap { $0 }
         return messages.isEmpty ? nil : messages.joined(separator: "\n")
     }
     var draftNote: TaskNote = .empty
@@ -55,7 +60,7 @@ final class WorkspaceEditor {
         workspace?.tasks.first { $0.occurrenceID == selectedID }
     }
 
-    private var draft: CreationDraft { CreationDraft(title: draftTitle, priority: draftPriority, projectID: draftProjectID, projectWasChosen: draftProjectWasChosen, plannedDay: draftDay, dayWasChosen: draftDayWasChosen, note: draftNote) }
+    private var draft: CreationDraft { CreationDraft(title: draftTitle, priority: draftPriority, projectID: draftProjectID, projectWasChosen: draftProjectWasChosen, plannedDay: draftDay, dayWasChosen: draftDayWasChosen, note: draftNote, labelIDs: draftLabelIDs, labelsWereChosen: draftLabelsWereChosen) }
 
     func openWorkspace() {
         guard workspace == nil else { return }
@@ -72,6 +77,8 @@ final class WorkspaceEditor {
             draftProjectWasChosen = opened.creationDraft?.projectWasChosen ?? false
             draftDay = opened.creationDraft?.plannedDay
             draftDayWasChosen = opened.creationDraft?.dayWasChosen ?? false
+            draftLabelIDs = opened.creationDraft?.labelIDs ?? []
+            draftLabelsWereChosen = opened.creationDraft?.labelsWereChosen ?? false
             openingError = nil
         } catch { openingError = error.localizedDescription }
     }
@@ -87,9 +94,10 @@ final class WorkspaceEditor {
         guard saveDetails() else { return }
         guard let workspace, saveDraft() else { isCreating = true; return }
         do {
-            let prepared = try workspace.prepareCreationDraft(projectID: selectedProjectID, plannedDay: contextDay)
+            let prepared = try workspace.prepareCreationDraft(projectID: selectedProjectID, plannedDay: contextDay, labelIDs: selectedLabelID.map { [$0] } ?? [])
             draftProjectID = prepared.projectID
             draftDay = prepared.plannedDay
+            draftLabelIDs = prepared.labelIDs
             draftError = nil
         } catch { draftError = error.localizedDescription }
         isCreating = true
@@ -126,6 +134,8 @@ final class WorkspaceEditor {
             draftProjectWasChosen = false
             draftDay = nil
             draftDayWasChosen = false
+            draftLabelIDs = []
+            draftLabelsWereChosen = false
             draftError = nil
         } catch { draftError = error.localizedDescription }
     }
@@ -141,6 +151,8 @@ final class WorkspaceEditor {
             draftProjectWasChosen = false
             draftDay = nil
             draftDayWasChosen = false
+            draftLabelIDs = []
+            draftLabelsWereChosen = false
             draftError = nil
             isCreating = false
             showDetails(for: task)
@@ -163,6 +175,8 @@ final class WorkspaceEditor {
         detailProjectID = task.projectID
         detailDay = task.plannedDay
         dayError = nil
+        detailLabelIDs = task.labelIDs
+        labelsError = nil
         projectError = nil
         titleError = nil
         priorityError = nil
@@ -226,14 +240,72 @@ final class WorkspaceEditor {
         guard savePriority() else { return false }
         guard saveProject() else { return false }
         guard saveNote() else { return false }
-        return saveDay()
+        guard saveDay() else { return false }
+        return saveLabels()
     }
 
     func selectProject(_ id: UUID?) {
         guard saveDetails() else { return }
         if isCreating { closeCreation() }
         selectedProjectID = id
+        selectedLabelID = nil
         detailsVisible = false
+    }
+
+    func selectLabel(_ id: UUID) {
+        guard saveDetails() else { return }
+        if isCreating { closeCreation() }
+        selectedLabelID = id
+        selectedProjectID = nil
+        detailsVisible = false
+    }
+
+    func matchesContext(_ task: TaskRecord) -> Bool {
+        (selectedProjectID == nil || task.projectID == selectedProjectID)
+            && (selectedLabelID.map { task.labelIDs.contains($0) } ?? true)
+    }
+
+    func changeLabels(_ ids: Set<UUID>) {
+        detailLabelIDs = ids
+        _ = saveLabels()
+    }
+
+    private func saveLabels() -> Bool {
+        guard let task = selectedTask else { return true }
+        guard detailLabelIDs != task.labelIDs else { labelsError = nil; return true }
+        do {
+            try workspace?.setLabels(id: task.id, labelIDs: detailLabelIDs)
+            labelsError = nil
+            return true
+        } catch {
+            labelsError = error.localizedDescription
+            return false
+        }
+    }
+
+    func deleteLabel(_ label: LabelRecord) {
+        guard saveDetails(), saveDraft() else { return }
+        do {
+            try workspace?.deleteLabel(id: label.id)
+            if selectedLabelID == label.id { selectedLabelID = nil }
+            synchronizeLabelSelection()
+            actionError = nil
+        } catch { actionError = error.localizedDescription }
+    }
+
+    func undoLabelDeletion() {
+        guard saveDetails(), saveDraft() else { return }
+        do {
+            try workspace?.undoLabelDeletion()
+            synchronizeLabelSelection()
+            actionError = nil
+        } catch { actionError = error.localizedDescription }
+    }
+
+    private func synchronizeLabelSelection() {
+        draftLabelIDs = workspace?.creationDraft?.labelIDs ?? []
+        detailLabelIDs = selectedTask?.labelIDs ?? []
+        labelsError = nil
     }
 
     func changeProject(_ id: UUID?) {
@@ -292,6 +364,8 @@ final class WorkspaceEditor {
         detailProjectID = selectedTask?.projectID
         detailDay = selectedTask?.plannedDay
         dayError = nil
+        detailLabelIDs = selectedTask?.labelIDs ?? []
+        labelsError = nil
         projectError = nil
         titleError = nil
         priorityError = nil

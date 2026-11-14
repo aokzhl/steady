@@ -7,6 +7,9 @@ public enum WorkspaceError: Error, Equatable, LocalizedError {
     case completedOwner
     case emptyTitle
     case invalidTitle
+    case emptyLabelTitle
+    case duplicateLabel
+    case labelNotFound
     case projectNotFound
     case occurrenceNotFound
     case draftChanged
@@ -25,6 +28,12 @@ public enum WorkspaceError: Error, Equatable, LocalizedError {
             "Введите название задачи."
         case .invalidTitle:
             "Название содержит недопустимый символ. Удалите его и повторите."
+        case .emptyLabelTitle:
+            "Введите название метки."
+        case .duplicateLabel:
+            "Метка с таким названием уже существует. Выберите её или измените название."
+        case .labelNotFound:
+            "Метка больше недоступна. Обновите список и повторите."
         case .projectNotFound:
             "Проект больше недоступен. Обновите список и повторите."
         case .occurrenceNotFound:
@@ -62,13 +71,14 @@ final class SQLiteDatabase {
                 guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
                 return Int(sqlite3_column_int(query, 0))
             }
-            guard version <= 6 else { throw WorkspaceError.unsupportedSchema(version) }
+            guard version <= 7 else { throw WorkspaceError.unsupportedSchema(version) }
             if version == 0 { try migrateToVersionOne() }
             if version < 2 { try migrateToVersionTwo() }
             if version < 3 { try migrateToVersionThree() }
             if version < 4 { try migrateToVersionFour() }
             if version < 5 { try migrateToVersionFive() }
             if version < 6 { try migrateToVersionSix() }
+            if version < 7 { try migrateToVersionSeven() }
         } catch {
             sqlite3_close(connection)
             connection = nil
@@ -95,6 +105,114 @@ final class SQLiteDatabase {
             guard try records().contains(where: { $0.occurrenceID == occurrenceID }) else { throw WorkspaceError.occurrenceNotFound }
             try execute("UPDATE task_occurrences SET planned_day = ?, time_zone = ? WHERE id = ?", [day.map { .text($0) } ?? .null, .text(timeZone), .text(occurrenceID.uuidString)])
             return try records()
+        }
+    }
+
+    private func migrateToVersionSeven() throws {
+        try transaction {
+            try execute("""
+                CREATE TABLE labels (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    title TEXT NOT NULL CHECK(length(trim(title)) > 0),
+                    title_key TEXT NOT NULL,
+                    color TEXT CHECK(color IN ('purple','blue','green','orange','pink')),
+                    created_at REAL NOT NULL,
+                    deleted_at REAL,
+                    deletion_order INTEGER
+                )
+                """)
+            try execute("CREATE UNIQUE INDEX active_label_title ON labels(title_key) WHERE deleted_at IS NULL")
+            try execute("ALTER TABLE creation_draft ADD COLUMN labels_were_chosen INTEGER NOT NULL DEFAULT 0 CHECK(labels_were_chosen IN (0, 1))")
+            try execute("CREATE TABLE task_labels (task_id TEXT NOT NULL REFERENCES tasks(id), label_id TEXT NOT NULL REFERENCES labels(id), PRIMARY KEY(task_id, label_id))")
+            try execute("CREATE TABLE draft_labels (draft_id INTEGER NOT NULL REFERENCES creation_draft(id) ON DELETE CASCADE, label_id TEXT NOT NULL REFERENCES labels(id), PRIMARY KEY(draft_id, label_id))")
+            try execute("PRAGMA user_version = 7")
+        }
+    }
+
+    func labels() throws -> [LabelRecord] {
+        try statement("SELECT id, title, color FROM labels WHERE deleted_at IS NULL ORDER BY created_at, rowid") { query in
+            var labels: [LabelRecord] = []
+            var result = sqlite3_step(query)
+            while result == SQLITE_ROW {
+                guard let id = UUID(uuidString: text(query, 0)) else { throw failure() }
+                let color = sqlite3_column_type(query, 2) == SQLITE_NULL ? nil : ProjectColor(rawValue: text(query, 2))
+                labels.append(LabelRecord(id: id, title: text(query, 1), color: color))
+                result = sqlite3_step(query)
+            }
+            guard result == SQLITE_DONE else { throw failure() }
+            return labels
+        }
+    }
+
+    func lastDeletedLabel() throws -> LabelRecord? {
+        try statement("SELECT id, title, color FROM labels WHERE deleted_at IS NOT NULL ORDER BY deletion_order DESC LIMIT 1") { query in
+            let result = sqlite3_step(query)
+            if result == SQLITE_DONE { return nil }
+            guard result == SQLITE_ROW, let id = UUID(uuidString: text(query, 0)) else { throw failure() }
+            let color = sqlite3_column_type(query, 2) == SQLITE_NULL ? nil : ProjectColor(rawValue: text(query, 2))
+            return LabelRecord(id: id, title: text(query, 1), color: color)
+        }
+    }
+
+    struct LabelState {
+        let labels: [LabelRecord]
+        let tasks: [TaskRecord]
+        let draft: CreationDraft?
+        let deleted: LabelRecord?
+    }
+
+    private func labelState() throws -> LabelState {
+        try LabelState(labels: labels(), tasks: records(), draft: creationDraft(), deleted: lastDeletedLabel())
+    }
+
+    func deleteLabel(id: UUID, at instant: Date) throws -> LabelState {
+        try transaction {
+            guard try labels().contains(where: { $0.id == id }) else { throw WorkspaceError.labelNotFound }
+            // Keep hidden associations so Undo restores the same tasks and draft.
+            try execute("UPDATE labels SET deleted_at = ?, deletion_order = (SELECT COALESCE(MAX(deletion_order), 0) + 1 FROM labels) WHERE id = ?",
+                        [.number(instant.timeIntervalSince1970), .text(id.uuidString)])
+            return try labelState()
+        }
+    }
+
+    func undoLabelDeletion() throws -> LabelState {
+        try transaction {
+            if let deleted = try lastDeletedLabel() {
+                try validateLabelTitle(deleted.title)
+                try execute("UPDATE labels SET deleted_at = NULL, deletion_order = NULL WHERE id = ?", [.text(deleted.id.uuidString)])
+            }
+            return try labelState()
+        }
+    }
+
+    private func labelTitleKey(_ title: String) -> String {
+        title.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
+            .precomposedStringWithCanonicalMapping
+    }
+
+    private func validateLabelTitle(_ title: String, excluding id: UUID? = nil) throws {
+        let key = labelTitleKey(title)
+        guard try !labels().contains(where: { $0.id != id && labelTitleKey($0.title) == key }) else {
+            throw WorkspaceError.duplicateLabel
+        }
+    }
+
+    func insertLabel(_ label: LabelRecord, createdAt: Date) throws -> [LabelRecord] {
+        try transaction {
+            try validateLabelTitle(label.title)
+            try execute("INSERT INTO labels (id, title, title_key, color, created_at) VALUES (?, ?, ?, ?, ?)",
+                        [.text(label.id.uuidString), .text(label.title), .text(labelTitleKey(label.title)),
+                         label.color.map { .text($0.rawValue) } ?? .null, .number(createdAt.timeIntervalSince1970)])
+            return try labels()
+        }
+    }
+
+    func renameLabel(id: UUID, title: String) throws -> [LabelRecord] {
+        try transaction {
+            guard try labels().contains(where: { $0.id == id }) else { throw WorkspaceError.labelNotFound }
+            try validateLabelTitle(title, excluding: id)
+            try execute("UPDATE labels SET title = ?, title_key = ? WHERE id = ?", [.text(title), .text(labelTitleKey(title)), .text(id.uuidString)])
+            return try labels()
         }
     }
 
@@ -167,7 +285,7 @@ final class SQLiteDatabase {
                     id: id, occurrenceID: occurrenceID, title: text(query, 2),
                     plannedDay: sqlite3_column_type(query, 3) == SQLITE_NULL ? nil : text(query, 3), timeZoneIdentifier: text(query, 4), completedAt: completedAt,
                     priority: priority, projectID: UUID(uuidString: text(query, 7)),
-                    note: TaskNote(rtf: blob(query, 8), plainText: text(query, 9))
+                    note: TaskNote(rtf: blob(query, 8), plainText: text(query, 9)), labelIDs: try labelIDs(taskID: id)
                 ))
                 result = sqlite3_step(query)
             }
@@ -179,6 +297,7 @@ final class SQLiteDatabase {
     func insert(_ record: TaskRecord, createdAt: Date, consuming draft: CreationDraft?) throws -> [TaskRecord] {
         try transaction {
             try validateProject(record.projectID)
+            try validateLabels(record.labelIDs)
             if let draft, try creationDraft() != draft { throw WorkspaceError.draftChanged }
             try execute(
                 "INSERT INTO tasks (id, title, created_at, priority, project_id, note_rtf, note_text) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -190,6 +309,9 @@ final class SQLiteDatabase {
                 [.text(record.occurrenceID.uuidString), .text(record.id.uuidString),
                  record.plannedDay.map { .text($0) } ?? .null, .text(record.timeZoneIdentifier)]
             )
+            for labelID in record.labelIDs {
+                try execute("INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)", [.text(record.id.uuidString), .text(labelID.uuidString)])
+            }
             if draft != nil { try execute("DELETE FROM creation_draft") }
             return try records()
         }
@@ -228,6 +350,39 @@ final class SQLiteDatabase {
                 throw WorkspaceError.occurrenceNotFound
             }
             try execute("UPDATE tasks SET priority = ? WHERE id = ?", [.text(priority.rawValue), .text(id.uuidString)])
+            return try records()
+        }
+    }
+
+    private func labelIDs(taskID: UUID?) throws -> Set<UUID> {
+        let sql = taskID == nil
+            ? "SELECT dl.label_id FROM draft_labels dl JOIN labels l ON l.id = dl.label_id WHERE dl.draft_id = 1 AND l.deleted_at IS NULL"
+            : "SELECT tl.label_id FROM task_labels tl JOIN labels l ON l.id = tl.label_id WHERE tl.task_id = ? AND l.deleted_at IS NULL"
+        return try statement(sql, taskID.map { [.text($0.uuidString)] } ?? []) { query in
+            var ids: Set<UUID> = []
+            var result = sqlite3_step(query)
+            while result == SQLITE_ROW {
+                guard let id = UUID(uuidString: text(query, 0)) else { throw failure() }
+                ids.insert(id)
+                result = sqlite3_step(query)
+            }
+            guard result == SQLITE_DONE else { throw failure() }
+            return ids
+        }
+    }
+
+    private func validateLabels(_ ids: Set<UUID>) throws {
+        guard try ids.isSubset(of: Set(labels().map(\.id))) else { throw WorkspaceError.labelNotFound }
+    }
+
+    func setLabels(id: UUID, labelIDs: Set<UUID>) throws -> [TaskRecord] {
+        try transaction {
+            guard try records().contains(where: { $0.id == id }) else { throw WorkspaceError.occurrenceNotFound }
+            try validateLabels(labelIDs)
+            try execute("DELETE FROM task_labels WHERE task_id = ?", [.text(id.uuidString)])
+            for labelID in labelIDs {
+                try execute("INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)", [.text(id.uuidString), .text(labelID.uuidString)])
+            }
             return try records()
         }
     }
@@ -439,26 +594,31 @@ final class SQLiteDatabase {
     }
 
     func creationDraft() throws -> CreationDraft? {
-        try statement("SELECT title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen FROM creation_draft WHERE id = 1") { query in
+        try statement("SELECT title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen, labels_were_chosen FROM creation_draft WHERE id = 1") { query in
             let result = sqlite3_step(query)
             if result == SQLITE_DONE { return nil }
             guard result == SQLITE_ROW, let priority = TaskPriority(rawValue: text(query, 1)) else {
                 throw failure()
             }
-            return CreationDraft(title: text(query, 0), priority: priority, projectID: UUID(uuidString: text(query, 2)), projectWasChosen: sqlite3_column_int(query, 3) != 0, plannedDay: sqlite3_column_type(query, 6) == SQLITE_NULL ? nil : text(query, 6), dayWasChosen: sqlite3_column_int(query, 7) != 0, note: TaskNote(rtf: blob(query, 4), plainText: text(query, 5)))
+            return CreationDraft(title: text(query, 0), priority: priority, projectID: UUID(uuidString: text(query, 2)), projectWasChosen: sqlite3_column_int(query, 3) != 0, plannedDay: sqlite3_column_type(query, 6) == SQLITE_NULL ? nil : text(query, 6), dayWasChosen: sqlite3_column_int(query, 7) != 0, note: TaskNote(rtf: blob(query, 4), plainText: text(query, 5)), labelIDs: try labelIDs(taskID: nil), labelsWereChosen: sqlite3_column_int(query, 8) != 0)
         }
     }
 
     func saveCreationDraft(_ draft: CreationDraft) throws {
         try transaction {
             try validateProject(draft.projectID)
+            try validateLabels(draft.labelIDs)
             if draft.isEmpty {
                 try execute("DELETE FROM creation_draft")
             } else {
                 try execute("""
-                    INSERT INTO creation_draft (id, title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET title = excluded.title, priority = excluded.priority, project_id = excluded.project_id, project_was_chosen = excluded.project_was_chosen, note_rtf = excluded.note_rtf, note_text = excluded.note_text, planned_day = excluded.planned_day, day_was_chosen = excluded.day_was_chosen
-                    """, [.text(draft.title), .text(draft.priority.rawValue), draft.projectID.map { .text($0.uuidString) } ?? .null, .number(draft.projectWasChosen ? 1 : 0), .blob(draft.note.rtf), .text(draft.note.plainText), draft.plannedDay.map { .text($0) } ?? .null, .number(draft.dayWasChosen ? 1 : 0)])
+                    INSERT INTO creation_draft (id, title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen, labels_were_chosen) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET title = excluded.title, priority = excluded.priority, project_id = excluded.project_id, project_was_chosen = excluded.project_was_chosen, note_rtf = excluded.note_rtf, note_text = excluded.note_text, planned_day = excluded.planned_day, day_was_chosen = excluded.day_was_chosen, labels_were_chosen = excluded.labels_were_chosen
+                    """, [.text(draft.title), .text(draft.priority.rawValue), draft.projectID.map { .text($0.uuidString) } ?? .null, .number(draft.projectWasChosen ? 1 : 0), .blob(draft.note.rtf), .text(draft.note.plainText), draft.plannedDay.map { .text($0) } ?? .null, .number(draft.dayWasChosen ? 1 : 0), .number(draft.labelsWereChosen ? 1 : 0)])
+                try execute("DELETE FROM draft_labels WHERE draft_id = 1")
+                for labelID in draft.labelIDs {
+                    try execute("INSERT INTO draft_labels (draft_id, label_id) VALUES (1, ?)", [.text(labelID.uuidString)])
+                }
             }
         }
     }
