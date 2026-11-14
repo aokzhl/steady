@@ -178,6 +178,57 @@ struct LabelTests {
     }
 
     @Test
+    func versionSixMigrationKeepsUndatedTasksDraftChoicesAndStopwatchFacts() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("steady.sqlite")
+        let fixture = Process()
+        fixture.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        fixture.arguments = [url.path, """
+            CREATE TABLE projects (id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, color TEXT, created_at REAL NOT NULL);
+            CREATE TABLE tasks (id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, created_at REAL NOT NULL, priority TEXT NOT NULL, project_id TEXT REFERENCES projects(id), note_rtf BLOB NOT NULL, note_text TEXT NOT NULL);
+            CREATE TABLE task_occurrences (id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id), planned_day TEXT, time_zone TEXT NOT NULL, completed_at REAL);
+            CREATE TABLE creation_draft (id INTEGER PRIMARY KEY CHECK(id = 1), title TEXT NOT NULL, priority TEXT NOT NULL, project_id TEXT REFERENCES projects(id), project_was_chosen INTEGER NOT NULL DEFAULT 0, note_rtf BLOB NOT NULL, note_text TEXT NOT NULL, planned_day TEXT, day_was_chosen INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE time_tool_runs (id TEXT PRIMARY KEY NOT NULL, kind TEXT NOT NULL, task_id TEXT REFERENCES tasks(id), occurrence_id TEXT REFERENCES task_occurrences(id), owner_title TEXT NOT NULL, started_at REAL NOT NULL, time_zone TEXT NOT NULL, stopped_at REAL);
+            CREATE UNIQUE INDEX one_active_time_tool ON time_tool_runs ((1)) WHERE stopped_at IS NULL;
+            CREATE TABLE time_tool_segments (id TEXT PRIMARY KEY NOT NULL, run_id TEXT NOT NULL REFERENCES time_tool_runs(id), position INTEGER NOT NULL, started_at REAL NOT NULL, ended_at REAL CHECK(ended_at >= started_at), UNIQUE(run_id, position));
+            INSERT INTO projects VALUES ('33333333-3333-3333-3333-333333333333', 'Учёба', 'blue', 1800000000);
+            INSERT INTO tasks VALUES ('11111111-1111-1111-1111-111111111111', 'Книга', 1800000000, 'high', '33333333-3333-3333-3333-333333333333', X'0001FF', 'Описание');
+            INSERT INTO task_occurrences VALUES ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', NULL, 'Asia/Almaty', 1800000100);
+            INSERT INTO creation_draft VALUES (1, 'Черновик', 'low', NULL, 1, X'0203', 'Заметка', NULL, 1);
+            INSERT INTO time_tool_runs VALUES ('44444444-4444-4444-4444-444444444444', 'stopwatch', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', 'Книга', 1800000000, 'Asia/Almaty', 1800000060);
+            INSERT INTO time_tool_segments VALUES ('55555555-5555-5555-5555-555555555555', '44444444-4444-4444-4444-444444444444', 0, 1800000000, 1800000060);
+            PRAGMA user_version = 6;
+            """]
+        try fixture.run()
+        fixture.waitUntilExit()
+        try #require(fixture.terminationStatus == 0)
+        let workspace = try TaskWorkspace(databaseURL: url)
+        let task = try #require(workspace.tasks.first)
+        #expect(task.plannedDay == nil)
+        #expect(task.completedAt == Date(timeIntervalSince1970: 1_800_000_100))
+        #expect(task.note == TaskNote(rtf: Data([0, 1, 255]), plainText: "Описание"))
+        #expect(task.projectID == workspace.projects.first?.id)
+        let draft = CreationDraft(title: "Черновик", priority: .low, projectWasChosen: true, dayWasChosen: true, note: TaskNote(rtf: Data([2, 3]), plainText: "Заметка"))
+        #expect(workspace.creationDraft == draft)
+        let result = try #require(workspace.timeToolResults.first)
+        #expect(result.id.uuidString == "44444444-4444-4444-4444-444444444444")
+        #expect(result.occurrenceID == task.occurrenceID)
+        #expect(result.durationSeconds == 60)
+        #expect(result.timeZoneIdentifier == "Asia/Almaty")
+        let label = try workspace.createLabel(title: "Читать")
+        try workspace.setLabels(id: task.id, labelIDs: [label.id])
+        let prepared = try workspace.prepareCreationDraft(plannedDay: "2027-01-02", labelIDs: [label.id])
+        #expect(prepared == draft)
+        let reopened = try TaskWorkspace(databaseURL: url)
+        #expect(reopened.tasks.first?.labelIDs == [label.id])
+        #expect(reopened.tasks.first?.plannedDay == nil)
+        #expect(reopened.creationDraft == draft)
+        #expect(reopened.timeToolResults == [result])
+    }
+
+    @Test
     func failedLabelWritesKeepSavedStateAndAllowRetry() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let moved = directory.appendingPathExtension("moved")

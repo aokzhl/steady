@@ -187,7 +187,7 @@ public final class TaskWorkspace {
         return task
     }
 
-    private func insertTask(title: String, priority: TaskPriority, projectID: UUID?, plannedDay: String?, note: TaskNote, consuming draft: CreationDraft?) throws -> TaskRecord {
+    private func insertTask(title: String, priority: TaskPriority, projectID: UUID?, plannedDay: String?, note: TaskNote, labelIDs: Set<UUID>, consuming draft: CreationDraft?) throws -> TaskRecord {
         let title = try validatedTitle(title)
         try validateDay(plannedDay)
         let createdAt = now()
