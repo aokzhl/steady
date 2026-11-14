@@ -12,6 +12,7 @@ private enum Palette {
 
 struct WorkspaceView: View {
     @Bindable var editor: WorkspaceEditor
+    @FocusState private var searchFocused: Bool
     @State private var projectEditorVisible = false
     @State private var labelEditorVisible = false
     @State private var editingLabel: LabelRecord?
@@ -100,6 +101,12 @@ struct WorkspaceView: View {
             .buttonStyle(.plain)
             .help("Показать или скрыть боковую панель")
             .accessibilityLabel("Боковая панель")
+            Button {
+                if editor.beginSearch() { searchFocused = true }
+            } label: { Label("Поиск", systemImage: "magnifyingglass") }
+            .keyboardShortcut("f", modifiers: .command)
+            .help("Поиск · ⌘F")
+            .accessibilityIdentifier("task-search-open")
             Text("Steady").font(.system(size: 14, weight: .semibold))
             Spacer()
             if editor.workspace != nil {
@@ -128,6 +135,12 @@ struct WorkspaceView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 20) {
+            Button {
+                if editor.beginSearch() { searchFocused = true }
+            } label: {
+                Label("Поиск · ⌘F", systemImage: "magnifyingglass")
+                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+            }.buttonStyle(.plain)
             Button { editor.selectProject(nil) } label: {
                 Label("Все задачи", systemImage: "list.bullet")
                     .font(.system(size: 13, weight: .medium))
@@ -207,6 +220,31 @@ struct WorkspaceView: View {
     private var taskList: some View {
         let result = editor.listResult
         return VStack(alignment: .leading, spacing: 18) {
+            if editor.isSearching {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("Название или заметка", text: $editor.searchQuery)
+                            .textFieldStyle(.roundedBorder)
+                            .focused($searchFocused)
+                            .onExitCommand { editor.searchEscape() }
+                            .accessibilityIdentifier("task-search-query")
+                        Button("Назад") { editor.endSearch() }
+                            .accessibilityIdentifier("task-search-back")
+                    }
+                    HStack {
+                        Text(editor.searchAllTasks ? "Поиск во всех задачах" : "Поиск в текущем контексте")
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                        Spacer()
+                        if !editor.searchAllTasks {
+                            Button("Искать во всех задачах", action: editor.searchEverywhere)
+                                .accessibilityIdentifier("task-search-everywhere")
+                        }
+                    }
+                    Text("Escape: очистить запрос, затем вернуться назад")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
             HStack {
                 Text(editor.contextTitle)
                     .font(.system(size: 24, weight: .semibold))
@@ -314,9 +352,9 @@ struct WorkspaceView: View {
     private var emptyState: some View {
         VStack(spacing: 12) {
             Image(systemName: "checklist").font(.system(size: 34, weight: .light)).foregroundStyle(Palette.accent)
-            Text(editor.listResult?.emptyReason == .emptyDatabase ? "Задач пока нет" : editor.listResult?.emptyReason == .noMatches ? "Нет совпадений с фильтрами" : "Нет задач за этот период")
+            Text(editor.listResult?.emptyReason == .emptyDatabase ? "Задач пока нет" : editor.listResult?.emptyReason == .noSearchMatches ? "Поиск не дал совпадений" : editor.listResult?.emptyReason == .noMatches ? "Нет совпадений с фильтрами" : "Нет задач за этот период")
                 .font(.system(size: 18, weight: .medium))
-            Text(editor.listResult?.emptyReason == .noMatches ? "Измените проект или выбранные метки." : editor.listResult?.emptyReason == .emptyPeriod ? "Выберите другой период или добавьте задачу." : "Добавьте дело, которым хотите заняться.")
+            Text(editor.listResult?.emptyReason == .noSearchMatches ? "Измените запрос или ищите во всех задачах." : editor.listResult?.emptyReason == .noMatches ? "Измените проект или выбранные метки." : editor.listResult?.emptyReason == .emptyPeriod ? "Выберите другой период или добавьте задачу." : "Добавьте дело, которым хотите заняться.")
                 .font(.system(size: 13)).foregroundStyle(.secondary)
             Button("Создать задачу", action: editor.openCreation)
                 .buttonStyle(.borderedProminent).padding(.top, 4)
@@ -368,7 +406,7 @@ struct WorkspaceView: View {
                 Text("Родитель выполнен · \(children.filter { $0.completedAt == nil }.count) подзадач открыто")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if editor.expandedParents.contains(task.occurrenceID) || isContext {
+            if editor.expandedParents.contains(task.occurrenceID) || isContext || !editor.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 ForEach(children, id: \.occurrenceID) { child in plainTaskRow(child).padding(.leading, 28) }
             }
         }

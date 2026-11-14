@@ -45,7 +45,7 @@ public struct WorkspacePreferences: Codable, Equatable, Sendable {
     public init() {}
 }
 
-public enum TaskListEmptyReason: Sendable { case emptyDatabase, emptyPeriod, noMatches }
+public enum TaskListEmptyReason: Sendable { case emptyDatabase, emptyPeriod, noMatches, noSearchMatches }
 
 public struct TaskListGroup: Identifiable, Sendable {
     public let id: String
