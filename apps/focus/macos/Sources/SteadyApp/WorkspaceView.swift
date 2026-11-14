@@ -39,7 +39,7 @@ struct WorkspaceView: View {
                     } else if editor.detailsVisible, let task = editor.selectedTask {
                         Divider()
                         DetailPanel(editor: editor, task: task)
-                            .id(task.id)
+                            .id(task.occurrenceID)
                             .frame(width: 300)
                             .background(Palette.sidebar)
                     }
@@ -197,8 +197,9 @@ struct WorkspaceView: View {
                 Text("Все").tag(TaskPeriod.all)
                 Text("Сегодня").tag(TaskPeriod.today)
                 Text("Завтра").tag(TaskPeriod.tomorrow)
+                Text("История").tag(TaskPeriod.history)
             }
-            .pickerStyle(.segmented).frame(maxWidth: 300)
+            .pickerStyle(.segmented).frame(maxWidth: 390)
 
 
             if let openingError = editor.openingError {
@@ -229,12 +230,15 @@ struct WorkspaceView: View {
                 }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
-                        let open = workspace.tasks.filter {
+                        let source = editor.period == .all ? workspace.visibleTasks : workspace.tasks
+                        let open = source.filter {
                             $0.completedAt == nil && editor.matchesContext($0)
-                            && (editor.contextDay == nil || $0.plannedDay == editor.contextDay || (editor.period == .today && $0.plannedDay.map { $0 < workspace.today } == true))
+                            && (editor.period != .history || $0.plannedDay.map { $0 < workspace.today } == true)
+                            && (editor.contextDay == nil || $0.plannedDay == editor.contextDay || (editor.period == .today && $0.seriesStart == nil && $0.plannedDay.map { $0 < workspace.today } == true))
                         }
-                        let completed = workspace.tasks.filter {
+                        let completed = source.filter {
                             $0.completedAt != nil && editor.matchesContext($0)
+                            && (editor.period != .history || $0.plannedDay.map { $0 < workspace.today } == true)
                             && (editor.contextDay == nil || (editor.period == .today ? workspace.completedToday.contains($0) : $0.plannedDay == editor.contextDay))
                         }
                         if open.isEmpty, completed.isEmpty {
@@ -243,27 +247,27 @@ struct WorkspaceView: View {
                             let overdue = editor.period == .today ? open.filter { $0.plannedDay.map { $0 < workspace.today } == true } : []
                             if !overdue.isEmpty {
                                 sectionLabel("Ранее запланировано", count: overdue.count)
-                                ForEach(overdue) { taskRow($0) }
+                                ForEach(overdue, id: \.occurrenceID) { taskRow($0) }
                             }
-                            let current = open.filter { task in !overdue.contains { $0.id == task.id } }
+                            let current = open.filter { task in !overdue.contains { $0.occurrenceID == task.occurrenceID } }
                             if !current.isEmpty {
                                 ForEach(workspace.projects) { project in
                                     let group = current.filter { $0.projectID == project.id }
                                     if !group.isEmpty {
                                         sectionLabel(project.title, count: group.count)
-                                        ForEach(group) { taskRow($0) }
+                                        ForEach(group, id: \.occurrenceID) { taskRow($0) }
                                     }
                                 }
                                 let unassigned = current.filter { $0.projectID == nil }
                                 if !unassigned.isEmpty {
                                     sectionLabel("Без проекта", count: unassigned.count)
-                                    ForEach(unassigned) { taskRow($0) }
+                                    ForEach(unassigned, id: \.occurrenceID) { taskRow($0) }
                                 }
                             }
                             if !completed.isEmpty {
                                 sectionLabel(editor.period == .today ? "Выполнено сегодня" : "Выполнено", count: completed.count)
                                     .padding(.top, 16)
-                                ForEach(completed) { taskRow($0) }
+                                ForEach(completed, id: \.occurrenceID) { taskRow($0) }
                             }
                         }
                     }
@@ -375,9 +379,16 @@ private struct CreationPanel: View {
                     .accessibilityLabel("Название задачи").accessibilityIdentifier("task-title")
             }
             Divider()
+            RecurrenceField(selection: Binding(get: { editor.draftRecurrence }, set: { editor.changeDraftRecurrence($0) }))
+            if editor.draftRecurrence != nil {
+                ScheduleField(day: Binding(get: { editor.draftSeriesStart ?? editor.workspace?.today }, set: {
+                    editor.draftSeriesStart = $0 ?? editor.workspace?.today; editor.saveDraft()
+                }), today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow, title: "Начало серии", allowsUndated: false)
+            } else {
             ScheduleField(day: Binding(get: { editor.draftDay }, set: {
                 editor.draftDay = $0; editor.draftDayWasChosen = true; editor.saveDraft()
             }), today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow)
+            }
             ProjectField(projects: editor.workspace?.projects ?? [], selection: Binding(
                 get: { editor.draftProjectID },
                 set: { editor.draftProjectID = $0; editor.draftProjectWasChosen = true; editor.saveDraft() }
@@ -457,8 +468,20 @@ private struct DetailPanel: View {
                 }
                 .onExitCommand { editor.cancelTitleEdit(); titleFocused = false }
                 .accessibilityLabel("Изменить название").accessibilityIdentifier("detail-title")
+            RecurrenceField(selection: Binding(get: { editor.detailRecurrence }, set: { editor.changeRecurrence($0) }), allowsNoRepeat: task.seriesStart == nil)
+            if editor.detailRecurrence != task.recurrence {
+                Button("Применить: этот и будущие") { editor.saveRecurrence() }
+                    .buttonStyle(.bordered)
+            }
+            if task.seriesStart != nil {
+                Text("Начало серии: \(task.seriesStart ?? ""). Изменение повтора сохраняет выполненные экземпляры, работу и индивидуальные переносы.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                Label(dayLabel(task.plannedDay, today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow), systemImage: "calendar")
+                    .font(.system(size: 12))
+            } else {
             ScheduleField(day: Binding(get: { editor.detailDay }, set: { editor.changeDay($0) }),
                           today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow)
+            }
             ProjectField(projects: editor.workspace?.projects ?? [], selection: Binding(
                 get: { editor.detailProjectID }, set: { editor.changeProject($0) }
             ))
@@ -513,10 +536,55 @@ private func dayLabel(_ day: String?, today: String?, tomorrow: String?) -> Stri
     return day
 }
 
+private struct RecurrenceField: View {
+    @Binding var selection: TaskRecurrence?
+    var allowsNoRepeat = true
+    private let weekdays = [(2, "Пн"), (3, "Вт"), (4, "Ср"), (5, "Чт"), (6, "Пт"), (7, "Сб"), (1, "Вс")]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("Повтор", selection: Binding(get: {
+                switch selection { case nil: 0; case .daily: 1; case .weekdays: 2; case .selectedWeekdays: 3 }
+            }, set: { value in
+                switch value {
+                case 1: selection = .daily
+                case 2: selection = .weekdays
+                case 3: selection = .selectedWeekdays([2])
+                default: selection = nil
+                }
+            })) {
+                if allowsNoRepeat { Text("Не повторять").tag(0) }
+                Text("Ежедневно").tag(1)
+                Text("Будни").tag(2)
+                Text("Выбранные дни").tag(3)
+            }
+            .accessibilityIdentifier("task-recurrence")
+            if case .selectedWeekdays(let selected) = selection {
+                HStack(spacing: 4) {
+                    ForEach(weekdays, id: \.0) { day, label in
+                        Button(label) {
+                            var days = selected
+                            if days.contains(day) { days.remove(day) } else { days.insert(day) }
+                            selection = .selectedWeekdays(days)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(selected.contains(day) ? .purple : .gray)
+                        .accessibilityLabel(label)
+                        .accessibilityValue(selected.contains(day) ? "Выбран" : "Не выбран")
+                    }
+                }
+            }
+        }
+        .font(.system(size: 12))
+    }
+}
+
 private struct ScheduleField: View {
     @Binding var day: String?
     let today: String?
     let tomorrow: String?
+    var title = "Расписание"
+    var allowsUndated = true
     @State private var choosingDate = false
 
     private var formatter: DateFormatter {
@@ -529,7 +597,7 @@ private struct ScheduleField: View {
 
     var body: some View {
         HStack {
-            Label("Расписание", systemImage: "calendar").foregroundStyle(.secondary)
+            Label(title, systemImage: "calendar").foregroundStyle(.secondary)
             Spacer()
             Menu(dayLabel(day, today: today, tomorrow: tomorrow)) {
                 Button("Сегодня") { day = today }
@@ -539,7 +607,7 @@ private struct ScheduleField: View {
                     choosingDate = true
                 }
                 Divider()
-                Button("Без даты") { day = nil }
+                if allowsUndated { Button("Без даты") { day = nil } }
             }
             .accessibilityIdentifier("task-schedule")
             .popover(isPresented: $choosingDate) {

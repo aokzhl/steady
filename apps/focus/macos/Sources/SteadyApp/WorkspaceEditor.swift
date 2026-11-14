@@ -3,7 +3,7 @@ import Observation
 import SteadyCore
 
 enum TaskPeriod: Hashable {
-    case all, today, tomorrow
+    case all, today, tomorrow, history
 }
 
 /// Window editing state outlives its panels, including unsaved input after a disk error.
@@ -23,11 +23,15 @@ final class WorkspaceEditor {
     var period: TaskPeriod = .today
     var draftDay: String?
     var draftDayWasChosen = false
+    var draftRecurrence: TaskRecurrence?
+    var draftSeriesStart: String?
+    var detailRecurrence: TaskRecurrence?
+    private var recurrenceError: String?
     var detailDay: String?
 
     var contextDay: String? {
         switch period {
-        case .all: nil
+        case .all, .history: nil
         case .today: workspace?.today
         case .tomorrow: workspace?.tomorrow
         }
@@ -44,7 +48,7 @@ final class WorkspaceEditor {
     var detailProjectID: UUID?
 
     var detailError: String? {
-        let messages = [titleError, priorityError, projectError, noteError, dayError, labelsError].compactMap { $0 }
+        let messages = [titleError, priorityError, projectError, noteError, dayError, recurrenceError, labelsError].compactMap { $0 }
         return messages.isEmpty ? nil : messages.joined(separator: "\n")
     }
     var draftNote: TaskNote = .empty
@@ -61,7 +65,7 @@ final class WorkspaceEditor {
         workspace?.tasks.first { $0.occurrenceID == selectedID }
     }
 
-    private var draft: CreationDraft { CreationDraft(title: draftTitle, priority: draftPriority, projectID: draftProjectID, projectWasChosen: draftProjectWasChosen, plannedDay: draftDay, dayWasChosen: draftDayWasChosen, note: draftNote, labelIDs: draftLabelIDs, labelsWereChosen: draftLabelsWereChosen) }
+    private var draft: CreationDraft { CreationDraft(title: draftTitle, priority: draftPriority, projectID: draftProjectID, projectWasChosen: draftProjectWasChosen, plannedDay: draftDay, dayWasChosen: draftDayWasChosen, note: draftNote, labelIDs: draftLabelIDs, labelsWereChosen: draftLabelsWereChosen, recurrence: draftRecurrence, seriesStart: draftSeriesStart) }
 
     func openWorkspace() {
         guard workspace == nil else { return }
@@ -80,6 +84,8 @@ final class WorkspaceEditor {
             draftDayWasChosen = opened.creationDraft?.dayWasChosen ?? false
             draftLabelIDs = opened.creationDraft?.labelIDs ?? []
             draftLabelsWereChosen = opened.creationDraft?.labelsWereChosen ?? false
+            draftRecurrence = opened.creationDraft?.recurrence
+            draftSeriesStart = opened.creationDraft?.seriesStart
             openingError = nil
         } catch { openingError = error.localizedDescription }
     }
@@ -99,6 +105,8 @@ final class WorkspaceEditor {
             draftProjectID = prepared.projectID
             draftDay = prepared.plannedDay
             draftLabelIDs = prepared.labelIDs
+            draftRecurrence = prepared.recurrence
+            draftSeriesStart = prepared.seriesStart
             draftError = nil
         } catch { draftError = error.localizedDescription }
         isCreating = true
@@ -139,6 +147,8 @@ final class WorkspaceEditor {
             draftLabelIDs = []
             draftLabelsWereChosen = false
             draftLabelsNeedReplacement = false
+            draftRecurrence = nil
+            draftSeriesStart = nil
             draftError = nil
         } catch { draftError = error.localizedDescription }
     }
@@ -157,6 +167,8 @@ final class WorkspaceEditor {
             draftLabelIDs = []
             draftLabelsWereChosen = false
             draftLabelsNeedReplacement = false
+            draftRecurrence = nil
+            draftSeriesStart = nil
             draftError = nil
             isCreating = false
             showDetails(for: task)
@@ -166,7 +178,7 @@ final class WorkspaceEditor {
     func selectTask(_ task: TaskRecord) {
         guard saveDetails() else { return }
         if isCreating { closeCreation() }
-        let saved = workspace?.tasks.first { $0.id == task.id } ?? task
+        let saved = workspace?.tasks.first { $0.occurrenceID == task.occurrenceID } ?? task
         showDetails(for: saved)
     }
 
@@ -178,6 +190,8 @@ final class WorkspaceEditor {
         noteError = nil
         detailProjectID = task.projectID
         detailDay = task.plannedDay
+        detailRecurrence = task.recurrence
+        recurrenceError = nil
         dayError = nil
         detailLabelIDs = task.labelIDs
         labelsError = nil
@@ -245,7 +259,8 @@ final class WorkspaceEditor {
         guard saveProject() else { return false }
         guard saveNote() else { return false }
         guard saveDay() else { return false }
-        return saveLabels()
+        guard saveLabels() else { return false }
+        return saveRecurrence()
     }
 
     func selectProject(_ id: UUID?) {
@@ -355,6 +370,30 @@ final class WorkspaceEditor {
         }
     }
 
+    func changeDraftRecurrence(_ recurrence: TaskRecurrence?) {
+        draftRecurrence = recurrence
+        if recurrence != nil, draftSeriesStart == nil { draftSeriesStart = workspace?.today }
+        if recurrence == nil { draftSeriesStart = nil }
+        _ = saveDraft()
+    }
+
+    func changeRecurrence(_ recurrence: TaskRecurrence?) {
+        detailRecurrence = recurrence
+    }
+
+    @discardableResult
+    func saveRecurrence() -> Bool {
+        guard let task = selectedTask, let recurrence = detailRecurrence, recurrence != task.recurrence else { recurrenceError = nil; return true }
+        do {
+            try workspace?.setRecurrence(occurrenceID: task.occurrenceID, recurrence: recurrence)
+            detailDay = selectedTask?.plannedDay
+            // A changed rule can remove the selected unworked occurrence.
+            if selectedTask == nil, let next = workspace?.visibleTasks.first(where: { $0.id == task.id }) { showDetails(for: next) }
+            recurrenceError = nil
+            return true
+        } catch { recurrenceError = error.localizedDescription; return false }
+    }
+
     func selectPeriod(_ value: TaskPeriod) {
         guard saveDetails() else { return }
         if isCreating { closeCreation() }
@@ -374,6 +413,8 @@ final class WorkspaceEditor {
         noteError = nil
         detailProjectID = selectedTask?.projectID
         detailDay = selectedTask?.plannedDay
+        detailRecurrence = selectedTask?.recurrence
+        recurrenceError = nil
         dayError = nil
         detailLabelIDs = selectedTask?.labelIDs ?? []
         labelsError = nil

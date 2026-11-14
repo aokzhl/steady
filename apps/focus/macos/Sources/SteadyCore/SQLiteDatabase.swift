@@ -2,6 +2,7 @@ import CSQLite
 import Foundation
 
 public enum WorkspaceError: Error, Equatable, LocalizedError {
+    case invalidRecurrence
     case invalidDay
     case sessionOccupied
     case completedOwner
@@ -18,6 +19,8 @@ public enum WorkspaceError: Error, Equatable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
+        case .invalidRecurrence:
+            "Выберите хотя бы один день недели."
         case .invalidDay:
             "Выберите существующую календарную дату."
         case .sessionOccupied:
@@ -71,7 +74,7 @@ final class SQLiteDatabase {
                 guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
                 return Int(sqlite3_column_int(query, 0))
             }
-            guard version <= 7 else { throw WorkspaceError.unsupportedSchema(version) }
+            guard version <= 8 else { throw WorkspaceError.unsupportedSchema(version) }
             if version == 0 { try migrateToVersionOne() }
             if version < 2 { try migrateToVersionTwo() }
             if version < 3 { try migrateToVersionThree() }
@@ -79,6 +82,7 @@ final class SQLiteDatabase {
             if version < 5 { try migrateToVersionFive() }
             if version < 6 { try migrateToVersionSix() }
             if version < 7 { try migrateToVersionSeven() }
+            if version < 8 { try migrateToVersionEight() }
         } catch {
             sqlite3_close(connection)
             connection = nil
@@ -87,6 +91,134 @@ final class SQLiteDatabase {
     }
 
     deinit { sqlite3_close(connection) }
+
+    private func migrateToVersionEight() throws {
+        try transaction {
+            try execute("CREATE TABLE recurrence_rules (task_id TEXT NOT NULL REFERENCES tasks(id), effective_day TEXT NOT NULL, recurrence TEXT, PRIMARY KEY(task_id, effective_day))")
+            try execute("ALTER TABLE task_occurrences ADD COLUMN series_day TEXT")
+            try execute("ALTER TABLE task_occurrences ADD COLUMN calendar_frozen INTEGER NOT NULL DEFAULT 0")
+            try execute("ALTER TABLE task_occurrences ADD COLUMN individual_override INTEGER NOT NULL DEFAULT 0")
+            try execute("CREATE UNIQUE INDEX occurrence_series_day ON task_occurrences(task_id, series_day)")
+            try execute("ALTER TABLE creation_draft ADD COLUMN recurrence TEXT")
+            try execute("ALTER TABLE creation_draft ADD COLUMN series_start TEXT")
+            try execute("PRAGMA user_version = 8")
+        }
+    }
+
+    private struct RecurrenceRule {
+        let day: String
+        let recurrence: TaskRecurrence?
+    }
+
+    private func encodedRecurrence(_ recurrence: TaskRecurrence?) throws -> Value {
+        guard let recurrence else { return .null }
+        return .text(String(decoding: try JSONEncoder().encode(recurrence), as: UTF8.self))
+    }
+
+    private func decodeRecurrence(_ query: OpaquePointer, _ index: Int32) throws -> TaskRecurrence? {
+        guard sqlite3_column_type(query, index) != SQLITE_NULL else { return nil }
+        let rule = try JSONDecoder().decode(TaskRecurrence.self, from: Data(text(query, index).utf8))
+        try rule.validate()
+        return rule
+    }
+
+    private func recurrenceRules(taskID: UUID) throws -> [RecurrenceRule] {
+        try statement("SELECT effective_day, recurrence FROM recurrence_rules WHERE task_id = ? ORDER BY effective_day", [.text(taskID.uuidString)]) { query in
+            var rules: [RecurrenceRule] = []
+            var result = sqlite3_step(query)
+            while result == SQLITE_ROW {
+                rules.append(RecurrenceRule(day: text(query, 0), recurrence: try decodeRecurrence(query, 1)))
+                result = sqlite3_step(query)
+            }
+            guard result == SQLITE_DONE else { throw failure() }
+            return rules
+        }
+    }
+
+    private func insertRule(taskID: UUID, day: String, recurrence: TaskRecurrence?) throws {
+        try execute("INSERT INTO recurrence_rules (task_id, effective_day, recurrence) VALUES (?, ?, ?) ON CONFLICT(task_id, effective_day) DO UPDATE SET recurrence = excluded.recurrence", [.text(taskID.uuidString), .text(day), try encodedRecurrence(recurrence)])
+    }
+
+    func refreshOccurrences(today: String, timeZone: String, through: String? = nil) throws -> [TaskRecord] {
+        try transaction {
+            try materialize(today: today, timeZone: timeZone, through: through)
+            return try records()
+        }
+    }
+
+    private func calendarDayFormatter() -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)!
+        formatter.calendar.timeZone = formatter.timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }
+
+    /// Calendar dates are enumerated in UTC; local DST cannot skip or repeat a date.
+    private func materialize(today: String, timeZone: String, through requested: String?) throws {
+        // A prefetched future occurrence adopts the current zone when that period arrives.
+        // Historical periods and occurrences with facts keep their original zone.
+        try execute("UPDATE task_occurrences SET time_zone = ? WHERE calendar_frozen = 0 AND series_day >= ? AND completed_at IS NULL AND NOT EXISTS (SELECT 1 FROM time_tool_runs r WHERE r.occurrence_id = task_occurrences.id)", [.text(timeZone), .text(today)])
+        try execute("UPDATE task_occurrences SET calendar_frozen = 1 WHERE series_day <= ?", [.text(today)])
+        let ids = try statement("SELECT DISTINCT task_id FROM recurrence_rules") { query in
+            var ids: [UUID] = []
+            var result = sqlite3_step(query)
+            while result == SQLITE_ROW {
+                guard let id = UUID(uuidString: text(query, 0)) else { throw failure() }
+                ids.append(id)
+                result = sqlite3_step(query)
+            }
+            guard result == SQLITE_DONE else { throw failure() }
+            return ids
+        }
+        let formatter = calendarDayFormatter()
+        let calendar = formatter.calendar!
+        for id in ids {
+            let rules = try recurrenceRules(taskID: id)
+            guard let start = rules.first?.day, var date = formatter.date(from: start) else { continue }
+            let boundary = max(today, requested ?? today)
+            // Every accepted rule has a match within seven calendar days.
+            let end = calendar.date(byAdding: .day, value: 7, to: formatter.date(from: max(boundary, start))!)!
+            var foundNext = false
+            while date <= end {
+                let day = formatter.string(from: date)
+                let rule = rules.last { $0.day <= day }?.recurrence
+                if let rule, rule.weekdays.contains(calendar.component(.weekday, from: date)) {
+                    if day <= boundary || !foundNext {
+                        try execute("INSERT OR IGNORE INTO task_occurrences (id, task_id, planned_day, time_zone, series_day, calendar_frozen) VALUES (?, ?, ?, ?, ?, ?)", [.text(UUID().uuidString), .text(id.uuidString), .text(day), .text(timeZone), .text(day), .number(day <= today ? 1 : 0)])
+                    }
+                    if day > boundary { foundNext = true }
+                }
+                date = calendar.date(byAdding: .day, value: 1, to: date)!
+            }
+        }
+    }
+
+    func setRecurrence(occurrenceID: UUID, recurrence: TaskRecurrence, today: String, timeZone: String) throws -> [TaskRecord] {
+        try transaction {
+            guard let selected = try records().first(where: { $0.occurrenceID == occurrenceID }) else { throw WorkspaceError.occurrenceNotFound }
+            let effective = selected.seriesDay ?? selected.plannedDay ?? today
+            try execute("DELETE FROM recurrence_rules WHERE task_id = ? AND effective_day >= ?", [.text(selected.id.uuidString), .text(effective)])
+            try insertRule(taskID: selected.id, day: effective, recurrence: recurrence)
+            // Keep matching UUIDs, completed facts, and explicit individual moves.
+            let candidates = try records().filter { $0.id == selected.id && (($0.seriesDay ?? $0.plannedDay ?? "") >= effective || $0.occurrenceID == occurrenceID) }
+            let formatter = calendarDayFormatter()
+            let calendar = formatter.calendar!
+            for record in candidates {
+                let day = record.seriesDay ?? record.plannedDay ?? effective
+                let matches = recurrence.weekdays.contains(calendar.component(.weekday, from: formatter.date(from: day)!))
+                if !matches {
+                    try execute("DELETE FROM task_occurrences WHERE id = ? AND completed_at IS NULL AND individual_override = 0 AND NOT EXISTS (SELECT 1 FROM time_tool_runs r WHERE r.occurrence_id = task_occurrences.id)", [.text(record.occurrenceID.uuidString)])
+                } else if record.seriesDay == nil {
+                    try execute("UPDATE task_occurrences SET series_day = ?, planned_day = COALESCE(planned_day, ?) WHERE id = ?", [.text(day), .text(day), .text(record.occurrenceID.uuidString)])
+                }
+            }
+            try materialize(today: today, timeZone: timeZone, through: nil)
+            return try records()
+        }
+    }
 
     private func migrateToVersionFive() throws {
         try transaction {
@@ -100,10 +232,22 @@ final class SQLiteDatabase {
         }
     }
 
-    func setPlannedDay(occurrenceID: UUID, day: String?, timeZone: String) throws -> [TaskRecord] {
+    func setPlannedDay(occurrenceID: UUID, day: String?, timeZone: String, today: String) throws -> [TaskRecord] {
         try transaction {
-            guard try records().contains(where: { $0.occurrenceID == occurrenceID }) else { throw WorkspaceError.occurrenceNotFound }
-            try execute("UPDATE task_occurrences SET planned_day = ?, time_zone = ? WHERE id = ?", [day.map { .text($0) } ?? .null, .text(timeZone), .text(occurrenceID.uuidString)])
+            let historicalZone: String? = try statement("""
+                SELECT time_zone, calendar_frozen != 0 OR completed_at IS NOT NULL
+                    OR planned_day < ? OR series_day < ?
+                    OR EXISTS (SELECT 1 FROM time_tool_runs r WHERE r.occurrence_id = task_occurrences.id)
+                FROM task_occurrences WHERE id = ?
+                """, [.text(today), .text(today), .text(occurrenceID.uuidString)]) { query in
+                let result = sqlite3_step(query)
+                guard result == SQLITE_ROW else {
+                    if result == SQLITE_DONE { throw WorkspaceError.occurrenceNotFound }
+                    throw failure()
+                }
+                return sqlite3_column_int(query, 1) != 0 ? text(query, 0) : nil
+            }
+            try execute("UPDATE task_occurrences SET planned_day = ?, time_zone = ?, calendar_frozen = ?, individual_override = 1 WHERE id = ?", [day.map { .text($0) } ?? .null, .text(historicalZone ?? timeZone), .number(historicalZone == nil ? 0 : 1), .text(occurrenceID.uuidString)])
             return try records()
         }
     }
@@ -267,9 +411,9 @@ final class SQLiteDatabase {
 
     func records() throws -> [TaskRecord] {
         try statement("""
-            SELECT t.id, o.id, t.title, o.planned_day, o.time_zone, o.completed_at, t.priority, t.project_id, t.note_rtf, t.note_text
+            SELECT t.id, o.id, t.title, o.planned_day, o.time_zone, o.completed_at, t.priority, t.project_id, t.note_rtf, t.note_text, o.series_day
             FROM tasks t JOIN task_occurrences o ON o.task_id = t.id
-            ORDER BY t.created_at, t.rowid
+            ORDER BY t.created_at, t.rowid, o.planned_day, o.rowid
             """) { query in
             var records: [TaskRecord] = []
             var result = sqlite3_step(query)
@@ -281,12 +425,18 @@ final class SQLiteDatabase {
                 }
                 let completedAt = sqlite3_column_type(query, 5) == SQLITE_NULL
                     ? nil : Date(timeIntervalSince1970: sqlite3_column_double(query, 5))
-                records.append(TaskRecord(
+                var record = TaskRecord(
                     id: id, occurrenceID: occurrenceID, title: text(query, 2),
                     plannedDay: sqlite3_column_type(query, 3) == SQLITE_NULL ? nil : text(query, 3), timeZoneIdentifier: text(query, 4), completedAt: completedAt,
                     priority: priority, projectID: UUID(uuidString: text(query, 7)),
                     note: TaskNote(rtf: blob(query, 8), plainText: text(query, 9)), labelIDs: try labelIDs(taskID: id)
-                ))
+                )
+                let rules = try recurrenceRules(taskID: id)
+                record.seriesStart = rules.first?.day
+                record.seriesDay = sqlite3_column_type(query, 10) == SQLITE_NULL ? nil : text(query, 10)
+                let day = record.seriesDay ?? record.plannedDay ?? "9999-12-31"
+                record.recurrence = rules.last { $0.day <= day }?.recurrence
+                records.append(record)
                 result = sqlite3_step(query)
             }
             guard result == SQLITE_DONE else { throw failure() }
@@ -294,7 +444,7 @@ final class SQLiteDatabase {
         }
     }
 
-    func insert(_ record: TaskRecord, createdAt: Date, consuming draft: CreationDraft?) throws -> [TaskRecord] {
+    func insert(_ record: TaskRecord, createdAt: Date, consuming draft: CreationDraft?, today: String) throws -> [TaskRecord] {
         try transaction {
             try validateProject(record.projectID)
             try validateLabels(record.labelIDs)
@@ -304,11 +454,16 @@ final class SQLiteDatabase {
                 [.text(record.id.uuidString), .text(record.title), .number(createdAt.timeIntervalSince1970),
                  .text(record.priority.rawValue), record.projectID.map { .text($0.uuidString) } ?? .null, .blob(record.note.rtf), .text(record.note.plainText)]
             )
-            try execute(
-                "INSERT INTO task_occurrences (id, task_id, planned_day, time_zone) VALUES (?, ?, ?, ?)",
+            if let recurrence = record.recurrence, let start = record.seriesStart {
+                try insertRule(taskID: record.id, day: start, recurrence: recurrence)
+                try materialize(today: today, timeZone: record.timeZoneIdentifier, through: nil)
+            } else {
+                try execute(
+                    "INSERT INTO task_occurrences (id, task_id, planned_day, time_zone) VALUES (?, ?, ?, ?)",
                 [.text(record.occurrenceID.uuidString), .text(record.id.uuidString),
                  record.plannedDay.map { .text($0) } ?? .null, .text(record.timeZoneIdentifier)]
-            )
+                )
+            }
             for labelID in record.labelIDs {
                 try execute("INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)", [.text(record.id.uuidString), .text(labelID.uuidString)])
             }
@@ -594,13 +749,13 @@ final class SQLiteDatabase {
     }
 
     func creationDraft() throws -> CreationDraft? {
-        try statement("SELECT title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen, labels_were_chosen FROM creation_draft WHERE id = 1") { query in
+        try statement("SELECT title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen, recurrence, series_start, labels_were_chosen FROM creation_draft WHERE id = 1") { query in
             let result = sqlite3_step(query)
             if result == SQLITE_DONE { return nil }
             guard result == SQLITE_ROW, let priority = TaskPriority(rawValue: text(query, 1)) else {
                 throw failure()
             }
-            return CreationDraft(title: text(query, 0), priority: priority, projectID: UUID(uuidString: text(query, 2)), projectWasChosen: sqlite3_column_int(query, 3) != 0, plannedDay: sqlite3_column_type(query, 6) == SQLITE_NULL ? nil : text(query, 6), dayWasChosen: sqlite3_column_int(query, 7) != 0, note: TaskNote(rtf: blob(query, 4), plainText: text(query, 5)), labelIDs: try labelIDs(taskID: nil), labelsWereChosen: sqlite3_column_int(query, 8) != 0)
+            return CreationDraft(title: text(query, 0), priority: priority, projectID: UUID(uuidString: text(query, 2)), projectWasChosen: sqlite3_column_int(query, 3) != 0, plannedDay: sqlite3_column_type(query, 6) == SQLITE_NULL ? nil : text(query, 6), dayWasChosen: sqlite3_column_int(query, 7) != 0, note: TaskNote(rtf: blob(query, 4), plainText: text(query, 5)), labelIDs: try labelIDs(taskID: nil), labelsWereChosen: sqlite3_column_int(query, 10) != 0, recurrence: try decodeRecurrence(query, 8), seriesStart: sqlite3_column_type(query, 9) == SQLITE_NULL ? nil : text(query, 9))
         }
     }
 
@@ -615,9 +770,9 @@ final class SQLiteDatabase {
                 try execute("DELETE FROM creation_draft")
             } else {
                 try execute("""
-                    INSERT INTO creation_draft (id, title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen, labels_were_chosen) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET title = excluded.title, priority = excluded.priority, project_id = excluded.project_id, project_was_chosen = excluded.project_was_chosen, note_rtf = excluded.note_rtf, note_text = excluded.note_text, planned_day = excluded.planned_day, day_was_chosen = excluded.day_was_chosen, labels_were_chosen = excluded.labels_were_chosen
-                    """, [.text(draft.title), .text(draft.priority.rawValue), draft.projectID.map { .text($0.uuidString) } ?? .null, .number(draft.projectWasChosen ? 1 : 0), .blob(draft.note.rtf), .text(draft.note.plainText), draft.plannedDay.map { .text($0) } ?? .null, .number(draft.dayWasChosen ? 1 : 0), .number(draft.labelsWereChosen ? 1 : 0)])
+                    INSERT INTO creation_draft (id, title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen, labels_were_chosen, recurrence, series_start) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET title = excluded.title, priority = excluded.priority, project_id = excluded.project_id, project_was_chosen = excluded.project_was_chosen, note_rtf = excluded.note_rtf, note_text = excluded.note_text, planned_day = excluded.planned_day, day_was_chosen = excluded.day_was_chosen, labels_were_chosen = excluded.labels_were_chosen, recurrence = excluded.recurrence, series_start = excluded.series_start
+                    """, [.text(draft.title), .text(draft.priority.rawValue), draft.projectID.map { .text($0.uuidString) } ?? .null, .number(draft.projectWasChosen ? 1 : 0), .blob(draft.note.rtf), .text(draft.note.plainText), draft.plannedDay.map { .text($0) } ?? .null, .number(draft.dayWasChosen ? 1 : 0), .number(draft.labelsWereChosen ? 1 : 0), try encodedRecurrence(draft.recurrence), draft.seriesStart.map { .text($0) } ?? .null])
                 if labelsChanged {
                     try execute("DELETE FROM draft_labels WHERE draft_id = 1")
                     for labelID in draft.labelIDs {
