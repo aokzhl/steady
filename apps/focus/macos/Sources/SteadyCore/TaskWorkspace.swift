@@ -776,18 +776,18 @@ extension TaskWorkspace {
         preparedThrough = end
     }
 
-    public func taskCalendar(month: String, in context: TaskListContext) -> TaskCalendarResult {
+    public func taskCalendar(month: String, in context: TaskListContext, searchQuery: String = "") -> TaskCalendarResult {
         let (value, interval) = monthContext(month) ?? monthContext(currentMonth)!
         let start = DayContext(date: interval.start, calendar: value).day
         let end = DayContext(date: value.date(byAdding: .day, value: -1, to: interval.end)!, calendar: value).day
         // Use the list's exact period/context predicates, while undated items remain reachable separately.
         var datedContext = context
         if context.period == .all { datedContext.period = .month; datedContext.namedMonth = start }
-        let matchingIDs = Set(taskList(in: datedContext).matches.map(\.occurrenceID))
+        let matchingIDs = Set(taskList(in: datedContext, searchQuery: searchQuery).matches.map(\.occurrenceID))
         var all = context
         all.period = context.period == .completed ? .completed : .all
         all.namedMonth = nil
-        let allMatches = taskList(in: all).matches
+        let allMatches = taskList(in: all, searchQuery: searchQuery).matches
         let undated = allMatches.filter { $0.plannedDay == nil && $0.periodEnd == nil }
         let weekly = tasks.filter { task in
             guard task.plannedDay == nil, let first = task.seriesDay, let last = task.periodEnd else { return false }

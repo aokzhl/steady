@@ -133,4 +133,24 @@ struct CalendarTests {
         let second = try workspace.createTask(title: "December daily", recurrence: .daily, seriesStart: "2026-12-01")
         #expect(workspace.taskList(in: december).matches.filter { $0.id == second.id }.count == 31)
     }
+
+    @Test func calendarSearchUsesTheSameTitleAndNoteMatchesAcrossDatedAndSeparateBuckets() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let instant = ISO8601DateFormatter().date(from: "2026-11-14T10:00:00Z")!
+        let workspace = try TaskWorkspace(databaseURL: directory.appendingPathComponent("steady.sqlite"), now: { instant })
+        let dated = try workspace.createTask(title: "Dated", plannedDay: workspace.today, note: TaskNote(plainText: "Calendar needle"))
+        let undated = try workspace.createTask(title: "Needle undated")
+        let weekly = try workspace.createTask(title: "Needle weekly", recurrence: .weekly, seriesStart: "2026-11-09")
+        _ = try workspace.createTask(title: "Unrelated", plannedDay: workspace.today)
+        try workspace.prepareCalendar(month: "2026-11-01")
+        let result = workspace.taskCalendar(month: "2026-11-01", in: TaskListContext(period: .all), searchQuery: "NEEDLE")
+        #expect(result.days.flatMap(\.tasks).map(\.occurrenceID) == [dated.occurrenceID])
+        #expect(result.undated.map(\.occurrenceID) == [undated.occurrenceID])
+        #expect(result.weekly.contains { $0.occurrenceID == weekly.occurrenceID })
+        let empty = workspace.taskCalendar(month: "2026-11-01", in: TaskListContext(period: .all), searchQuery: "absent")
+        #expect(empty.days.flatMap(\.tasks).isEmpty)
+        #expect(empty.undated.isEmpty)
+        #expect(empty.weekly.isEmpty)
+    }
 }

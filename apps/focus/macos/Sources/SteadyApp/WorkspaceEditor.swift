@@ -57,12 +57,15 @@ final class WorkspaceEditor {
         isCreating = false
         detailsVisible = false
         screen = .tasks
+        presentation = .list
+        calendarDay = nil
         searchFocusRequest += 1
         return true
     }
 
     func searchEverywhere() {
         guard isSearching else { return }
+        presentation = .list
         context = TaskListContext(period: .all, showCompleted: true)
         reload()
     }
@@ -101,7 +104,7 @@ final class WorkspaceEditor {
         case .all, .completed: return navigation.calendarMonth ?? workspace.currentMonth
         }
     }
-    var calendarResult: TaskCalendarResult? { workspace?.taskCalendar(month: calendarMonth, in: context) }
+    var calendarResult: TaskCalendarResult? { workspace?.taskCalendar(month: calendarMonth, in: context, searchQuery: searchQuery) }
     var calendarDay: String? {
         get { navigation.calendarDay }
         set { navigation.calendarDay = newValue }
