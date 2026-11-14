@@ -4,6 +4,7 @@ import Foundation
 public enum WorkspaceError: Error, Equatable, LocalizedError {
     case emptyTitle
     case invalidTitle
+    case projectNotFound
     case occurrenceNotFound
     case draftChanged
     case storage(String)
@@ -15,6 +16,8 @@ public enum WorkspaceError: Error, Equatable, LocalizedError {
             "Введите название задачи."
         case .invalidTitle:
             "Название содержит недопустимый символ. Удалите его и повторите."
+        case .projectNotFound:
+            "Проект больше недоступен. Обновите список и повторите."
         case .occurrenceNotFound:
             "Задача больше недоступна. Обновите список и повторите."
         case .draftChanged:
@@ -50,9 +53,10 @@ final class SQLiteDatabase {
                 guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
                 return Int(sqlite3_column_int(query, 0))
             }
-            guard version <= 2 else { throw WorkspaceError.unsupportedSchema(version) }
+            guard version <= 3 else { throw WorkspaceError.unsupportedSchema(version) }
             if version == 0 { try migrateToVersionOne() }
             if version < 2 { try migrateToVersionTwo() }
+            if version < 3 { try migrateToVersionThree() }
         } catch {
             sqlite3_close(connection)
             connection = nil
@@ -62,9 +66,58 @@ final class SQLiteDatabase {
 
     deinit { sqlite3_close(connection) }
 
+    private func migrateToVersionThree() throws {
+        try transaction {
+            try execute("""
+                CREATE TABLE projects (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    title TEXT NOT NULL CHECK(length(trim(title)) > 0),
+                    color TEXT CHECK(color IN ('purple','blue','green','orange','pink')),
+                    created_at REAL NOT NULL
+                )
+                """)
+            try execute("ALTER TABLE tasks ADD COLUMN project_id TEXT REFERENCES projects(id)")
+            try execute("ALTER TABLE creation_draft ADD COLUMN project_id TEXT REFERENCES projects(id)")
+            try execute("ALTER TABLE creation_draft ADD COLUMN project_was_chosen INTEGER NOT NULL DEFAULT 0 CHECK(project_was_chosen IN (0, 1))")
+            try execute("PRAGMA user_version = 3")
+        }
+    }
+
+    func projects() throws -> [ProjectRecord] {
+        try statement("SELECT id, title, color FROM projects ORDER BY created_at, rowid") { query in
+            var projects: [ProjectRecord] = []
+            var result = sqlite3_step(query)
+            while result == SQLITE_ROW {
+                guard let id = UUID(uuidString: text(query, 0)) else { throw failure() }
+                let color = sqlite3_column_type(query, 2) == SQLITE_NULL ? nil : ProjectColor(rawValue: text(query, 2))
+                projects.append(ProjectRecord(id: id, title: text(query, 1), color: color))
+                result = sqlite3_step(query)
+            }
+            guard result == SQLITE_DONE else { throw failure() }
+            return projects
+        }
+    }
+
+    func insertProject(_ project: ProjectRecord, createdAt: Date) throws -> [ProjectRecord] {
+        try transaction {
+            try execute("INSERT INTO projects (id, title, color, created_at) VALUES (?, ?, ?, ?)",
+                        [.text(project.id.uuidString), .text(project.title), project.color.map { .text($0.rawValue) } ?? .null,
+                         .number(createdAt.timeIntervalSince1970)])
+            return try projects()
+        }
+    }
+
+    func renameProject(id: UUID, title: String) throws -> [ProjectRecord] {
+        try transaction {
+            guard try projects().contains(where: { $0.id == id }) else { throw WorkspaceError.projectNotFound }
+            try execute("UPDATE projects SET title = ? WHERE id = ?", [.text(title), .text(id.uuidString)])
+            return try projects()
+        }
+    }
+
     func records() throws -> [TaskRecord] {
         try statement("""
-            SELECT t.id, o.id, t.title, o.planned_day, o.time_zone, o.completed_at, t.priority
+            SELECT t.id, o.id, t.title, o.planned_day, o.time_zone, o.completed_at, t.priority, t.project_id
             FROM tasks t JOIN task_occurrences o ON o.task_id = t.id
             ORDER BY t.created_at, t.rowid
             """) { query in
@@ -81,7 +134,7 @@ final class SQLiteDatabase {
                 records.append(TaskRecord(
                     id: id, occurrenceID: occurrenceID, title: text(query, 2),
                     plannedDay: text(query, 3), timeZoneIdentifier: text(query, 4), completedAt: completedAt,
-                    priority: priority
+                    priority: priority, projectID: UUID(uuidString: text(query, 7))
                 ))
                 result = sqlite3_step(query)
             }
@@ -92,11 +145,12 @@ final class SQLiteDatabase {
 
     func insert(_ record: TaskRecord, createdAt: Date, consuming draft: CreationDraft?) throws -> [TaskRecord] {
         try transaction {
+            try validateProject(record.projectID)
             if let draft, try creationDraft() != draft { throw WorkspaceError.draftChanged }
             try execute(
-                "INSERT INTO tasks (id, title, created_at, priority) VALUES (?, ?, ?, ?)",
+                "INSERT INTO tasks (id, title, created_at, priority, project_id) VALUES (?, ?, ?, ?, ?)",
                 [.text(record.id.uuidString), .text(record.title), .number(createdAt.timeIntervalSince1970),
-                 .text(record.priority.rawValue)]
+                 .text(record.priority.rawValue), record.projectID.map { .text($0.uuidString) } ?? .null]
             )
             try execute(
                 "INSERT INTO task_occurrences (id, task_id, planned_day, time_zone) VALUES (?, ?, ?, ?)",
@@ -141,6 +195,21 @@ final class SQLiteDatabase {
         }
     }
 
+    private func validateProject(_ projectID: UUID?) throws {
+        if let projectID, try !projects().contains(where: { $0.id == projectID }) {
+            throw WorkspaceError.projectNotFound
+        }
+    }
+
+    func setProject(id: UUID, projectID: UUID?) throws -> [TaskRecord] {
+        try transaction {
+            guard try records().contains(where: { $0.id == id }) else { throw WorkspaceError.occurrenceNotFound }
+            try validateProject(projectID)
+            try execute("UPDATE tasks SET project_id = ? WHERE id = ?", [projectID.map { .text($0.uuidString) } ?? .null, .text(id.uuidString)])
+            return try records()
+        }
+    }
+
     private func migrateToVersionTwo() throws {
         try transaction {
             try execute("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'none' CHECK(priority IN ('none','highest','high','medium','low','lowest'))")
@@ -156,25 +225,26 @@ final class SQLiteDatabase {
     }
 
     func creationDraft() throws -> CreationDraft? {
-        try statement("SELECT title, priority FROM creation_draft WHERE id = 1") { query in
+        try statement("SELECT title, priority, project_id, project_was_chosen FROM creation_draft WHERE id = 1") { query in
             let result = sqlite3_step(query)
             if result == SQLITE_DONE { return nil }
             guard result == SQLITE_ROW, let priority = TaskPriority(rawValue: text(query, 1)) else {
                 throw failure()
             }
-            return CreationDraft(title: text(query, 0), priority: priority)
+            return CreationDraft(title: text(query, 0), priority: priority, projectID: UUID(uuidString: text(query, 2)), projectWasChosen: sqlite3_column_int(query, 3) != 0)
         }
     }
 
     func saveCreationDraft(_ draft: CreationDraft) throws {
         try transaction {
-            if draft.title.isEmpty && draft.priority == .none {
+            try validateProject(draft.projectID)
+            if draft.isEmpty {
                 try execute("DELETE FROM creation_draft")
             } else {
                 try execute("""
-                    INSERT INTO creation_draft (id, title, priority) VALUES (1, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET title = excluded.title, priority = excluded.priority
-                    """, [.text(draft.title), .text(draft.priority.rawValue)])
+                    INSERT INTO creation_draft (id, title, priority, project_id, project_was_chosen) VALUES (1, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET title = excluded.title, priority = excluded.priority, project_id = excluded.project_id, project_was_chosen = excluded.project_was_chosen
+                    """, [.text(draft.title), .text(draft.priority.rawValue), draft.projectID.map { .text($0.uuidString) } ?? .null, .number(draft.projectWasChosen ? 1 : 0)])
             }
         }
     }
