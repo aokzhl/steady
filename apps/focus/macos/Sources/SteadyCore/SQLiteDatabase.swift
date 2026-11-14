@@ -300,7 +300,7 @@ final class SQLiteDatabase {
         }
     }
 
-    func setRecurrence(occurrenceID: UUID, recurrence: TaskRecurrence, today: String, timeZone: String) throws -> [TaskRecord] {
+    func setRecurrence(occurrenceID: UUID, recurrence: TaskRecurrence, today: String, timeZone: String, through: String?) throws -> [TaskRecord] {
         try transaction {
             guard let selected = try records().first(where: { $0.occurrenceID == occurrenceID }) else { throw WorkspaceError.occurrenceNotFound }
             guard selected.parentTaskID == nil else { throw WorkspaceError.childInheritsParent }
@@ -328,7 +328,7 @@ final class SQLiteDatabase {
                     try execute("UPDATE task_occurrences SET series_day = ?, planned_day = COALESCE(planned_day, ?) WHERE id = ?", [.text(day), .text(day), .text(record.occurrenceID.uuidString)])
                 }
             }
-            try materialize(today: today, timeZone: timeZone, through: nil)
+            try materialize(today: today, timeZone: timeZone, through: through)
             try materializeChildren()
             return try records()
         }
@@ -575,7 +575,7 @@ final class SQLiteDatabase {
         }
     }
 
-    func insert(_ record: TaskRecord, createdAt: Date, consuming draft: CreationDraft?, today: String) throws -> [TaskRecord] {
+    func insert(_ record: TaskRecord, createdAt: Date, consuming draft: CreationDraft?, today: String, through: String?) throws -> [TaskRecord] {
         try transaction {
             try validateProject(record.projectID)
             try validateLabels(record.labelIDs)
@@ -587,7 +587,7 @@ final class SQLiteDatabase {
             )
             if let recurrence = record.recurrence, let start = record.seriesStart {
                 try insertRule(taskID: record.id, day: start, recurrence: recurrence)
-                try materialize(today: today, timeZone: record.timeZoneIdentifier, through: nil)
+                try materialize(today: today, timeZone: record.timeZoneIdentifier, through: through)
             } else {
                 try execute(
                     "INSERT INTO task_occurrences (id, task_id, planned_day, time_zone) VALUES (?, ?, ?, ?)",
