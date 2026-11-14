@@ -657,9 +657,19 @@ private struct ToolMenu: View {
     let task: TaskRecord?
     var compact = false
 
+    private var timerTitle: String {
+        guard let task else { return "Таймер · Не задано" }
+        do {
+            guard let duration = try editor.workspace?.timerDurationSeconds(taskID: task.id) else {
+                return "Таймер · Не задано"
+            }
+            return "Таймер · " + durationLabel(duration)
+        } catch { return "Таймер · Недоступно" }
+    }
+
     var body: some View {
         Menu {
-            Button("Таймер") { editor.requestTimer(task) }
+            Button(timerTitle) { editor.requestTimer(task) }
                 .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil)
             Button("Помодоро · Не задано") {}.disabled(true)
             Button("Секундомер · Счёт вверх") { editor.startStopwatch(task) }

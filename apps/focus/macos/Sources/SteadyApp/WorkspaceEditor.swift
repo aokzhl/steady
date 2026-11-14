@@ -449,7 +449,7 @@ final class WorkspaceEditor {
             guard saveDraft() else { return }
             isCreating = false
         }
-        let saved = workspace?.tasks.first { $0.id == owner.id } ?? owner
+        let saved = workspace?.tasks.first { $0.occurrenceID == owner.occurrenceID } ?? owner
         selectedProjectID = saved.projectID
         period = .all
         showDetails(for: saved)
