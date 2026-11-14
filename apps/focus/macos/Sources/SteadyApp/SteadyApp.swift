@@ -15,6 +15,12 @@ struct SteadyApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1184, height: 744)
         .windowResizability(.contentMinSize)
+        .commands {
+            CommandGroup(after: .textEditing) {
+                Button("Найти задачи") { editor.beginSearch() }
+                    .keyboardShortcut("f", modifiers: .command)
+            }
+        }
     }
 }
 

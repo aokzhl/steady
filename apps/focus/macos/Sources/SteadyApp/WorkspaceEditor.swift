@@ -42,18 +42,20 @@ final class WorkspaceEditor {
     var searchQuery = ""
     private var searchOrigin: WorkspacePreferences?
     private var searchOriginWasCreating = false
+    var searchFocusRequest = 0
     var isSearching: Bool { searchOrigin != nil }
     var searchAllTasks: Bool { isSearching && context == TaskListContext(period: .all, showCompleted: true) }
     var listResult: TaskListResult? { workspace?.taskList(in: context, searchQuery: searchQuery) }
 
     @discardableResult
     func beginSearch() -> Bool {
-        if isSearching { return true }
+        if isSearching { searchFocusRequest += 1; return true }
         guard saveDetails(), !isCreating || saveDraft() else { return false }
         searchOrigin = navigation
         searchOriginWasCreating = isCreating
         isCreating = false
         screen = .tasks
+        searchFocusRequest += 1
         return true
     }
 

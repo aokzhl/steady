@@ -7,6 +7,7 @@ enum Palette {
     static let background = Color(red: 23/255, green: 23/255, blue: 28/255)
     static let sidebar = Color(red: 27/255, green: 27/255, blue: 33/255)
     static let surface = Color(red: 30/255, green: 30/255, blue: 37/255)
+    static let propertyValue = Color(red: 224/255, green: 213/255, blue: 238/255)
     static let accent = Color(red: 199/255, green: 190/255, blue: 252/255)
 }
 
@@ -24,11 +25,12 @@ struct WorkspaceView: View {
 
     var body: some View {
         GeometryReader { geometry in
+            let isNarrow = geometry.size.width < 1050
             VStack(spacing: 0) {
                 header
                 Divider()
                 HStack(spacing: 0) {
-                    if editor.sidebarVisible && !(geometry.size.width < 1050 && panelVisible) {
+                    if editor.sidebarVisible && !(isNarrow && panelVisible && !editor.isSearching) {
                         sidebar
                         Divider()
                     }
@@ -39,22 +41,22 @@ struct WorkspaceView: View {
                                 RunHistory(results: editor.workspace?.timeToolResults ?? [])
                             }.padding(26).frame(maxWidth: .infinity, alignment: .leading)
                         }
-                    } else if !(geometry.size.width < 1050 && panelVisible) {
+                    } else if !(isNarrow && panelVisible && !editor.isSearching) {
                         taskList
                     }
-                    if editor.workspace != nil, editor.screen == .tasks {
+                    if editor.workspace != nil, editor.screen == .tasks, !(isNarrow && editor.isSearching) {
                         if editor.isCreating {
                             Divider()
-                            CreationPanel(editor: editor, isPage: geometry.size.width < 1050)
-                                .frame(width: geometry.size.width < 1050 ? nil : 400)
-                                .frame(maxWidth: geometry.size.width < 1050 ? .infinity : nil)
+                            CreationPanel(editor: editor, isPage: isNarrow)
+                                .frame(width: isNarrow ? nil : 400)
+                                .frame(maxWidth: isNarrow ? .infinity : nil)
                                 .background(Palette.sidebar)
                         } else if editor.detailsVisible, let task = editor.selectedTask {
                             Divider()
-                            DetailPanel(editor: editor, task: task, isPage: geometry.size.width < 1050)
+                            DetailPanel(editor: editor, task: task, isPage: isNarrow)
                                 .id(task.occurrenceID)
-                                .frame(width: geometry.size.width < 1050 ? nil : 340)
-                                .frame(maxWidth: geometry.size.width < 1050 ? .infinity : nil)
+                                .frame(width: isNarrow ? nil : 340)
+                                .frame(maxWidth: isNarrow ? .infinity : nil)
                                 .background(Palette.sidebar)
                         }
                     }
@@ -92,6 +94,12 @@ struct WorkspaceView: View {
         }
         .task { editor.openWorkspace() }
         .onAppear { editor.reopenWindow = { openWindow(id: "main") } }
+        .onChange(of: editor.searchFocusRequest) { _, _ in
+            Task { @MainActor in
+                await Task.yield()
+                searchFocused = true
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { editor.reload() }
         }
@@ -132,8 +140,7 @@ struct WorkspaceView: View {
             }
             Menu {
                 Toggle("Боковая панель", isOn: $editor.sidebarVisible)
-                Button("Поиск") { if editor.beginSearch() { searchFocused = true } }
-                    .keyboardShortcut("f", modifiers: .command)
+                Button("Поиск") { editor.beginSearch() }
                 Toggle("Показать выполненные", isOn: $editor.context.showCompleted)
                 Button("Сбросить фильтры") { editor.selectProject(nil) }
             } label: { Image(systemName: "gearshape") }
@@ -518,6 +525,7 @@ private struct CreationPanel: View {
             creationFooter.padding(.horizontal, 20).frame(height: 56)
         }
         .background(Color(red: 31/255, green: 29/255, blue: 38/255))
+        .onExitCommand { editor.closeCreation() }
     }
 
     /// SwiftUI can retain a child binding after the draft is consumed or a sibling is removed.
@@ -725,7 +733,9 @@ private struct DetailPanel: View {
                     HStack {
                         Button { editor.setCompleted(child) } label: { Image(systemName: child.completedAt == nil ? "circle" : "checkmark.circle.fill") }.buttonStyle(.plain)
                         Button(child.title) { editor.selectTask(child) }.buttonStyle(.plain)
-                    }
+                            .font(.system(size: 13)).frame(maxWidth: .infinity, alignment: .leading)
+                        ToolMenu(editor: editor, task: child, compact: true)
+                    }.frame(minHeight: 44)
                 }
                 HStack {
                     TextField("Новая подзадача", text: $editor.newChildTitle).onSubmit(editor.addChild)
@@ -762,17 +772,27 @@ struct PropertyRow<Content: View>: View {
             content.font(.system(size: 13))
         }
         .font(.system(size: 12)).frame(minHeight: 42)
-        .overlay(alignment: .bottom) { Divider() }
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.white.opacity(0.09)).frame(maxWidth: .infinity).frame(height: 1)
+        }
     }
 }
 
-struct PropertyValue: View {
+struct PropertyMenu<Actions: View>: View {
     let title: String
+    @ViewBuilder var actions: Actions
+
     var body: some View {
-        HStack(spacing: 8) {
-            Text(title).lineLimit(1)
-            Image(systemName: "chevron.right").font(.system(size: 10))
-        }
+        Menu { actions } label: { Text(title).fontWeight(.regular) }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden)
+            .font(.system(size: 13, weight: .regular))
+            .tint(Palette.propertyValue).foregroundStyle(Palette.propertyValue)
+            .fixedSize().padding(.trailing, 18)
+            .overlay(alignment: .trailing) {
+                Image(systemName: "chevron.right").font(.system(size: 10, weight: .regular))
+                    .foregroundStyle(Palette.propertyValue)
+                    .allowsHitTesting(false).accessibilityHidden(true)
+            }
     }
 }
 
@@ -790,9 +810,11 @@ private struct PanelHeader: View {
             Text(title).font(.system(size: 14, weight: .semibold))
             Spacer()
             Button(action: close) { Image(systemName: "xmark") }
-                .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel("Закрыть")
+                .buttonStyle(.plain).accessibilityLabel("Закрыть")
         }.padding(.horizontal, 20).frame(height: 60)
-            .overlay(alignment: .bottom) { Divider() }
+            .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.white.opacity(0.09)).frame(maxWidth: .infinity).frame(height: 1)
+        }
     }
 }
 
@@ -813,6 +835,7 @@ private struct SchedulePopover<Content: View>: View {
                 content
                 HStack { Spacer(); Button("Готово") { expanded = false } }
             }.padding(20).frame(width: 330)
+                .onExitCommand { expanded = false }
         }
     }
 }
@@ -831,12 +854,11 @@ private struct PriorityField: View {
 
     var body: some View {
         PropertyRow(title: "Приоритет", icon: "line.3.horizontal.decrease") {
-            Menu {
+            PropertyMenu(title: selection.label) {
                 ForEach(TaskPriority.allCases, id: \.self) { priority in
                     Button(priority.label) { selection = priority }
                 }
-            } label: { PropertyValue(title: selection.label) }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            }
                 .accessibilityIdentifier("task-priority")
                 .accessibilityValue(selection.label)
         }

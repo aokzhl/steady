@@ -26,14 +26,12 @@ struct ProjectField: View {
 
     var body: some View {
         PropertyRow(title: "Проект", icon: "folder") {
-            Menu {
+            PropertyMenu(title: projects.first { $0.id == selection }?.title ?? "Без проекта") {
                 Button("Без проекта") { selection = nil }
                 ForEach(projects) { project in
                     Button(project.title) { selection = project.id }
                 }
-            } label: {
-                PropertyValue(title: projects.first { $0.id == selection }?.title ?? "Без проекта")
-            }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            }
                 .accessibilityIdentifier("task-project")
                 .accessibilityValue(projects.first { $0.id == selection }?.title ?? "Без проекта")
         }
