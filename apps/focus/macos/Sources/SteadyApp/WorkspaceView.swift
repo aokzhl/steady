@@ -247,7 +247,10 @@ struct WorkspaceView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
                         let source = editor.period == .all ? workspace.visibleTasks : workspace.tasks
-                        let matching = source.filter { editor.matchesContext($0) && editor.matchesPeriod($0) }
+                        let matches = source.filter { editor.matchesContext($0) && editor.matchesPeriod($0) }
+                        let matching = source.filter { task in
+                            task.parentTaskID == nil && (matches.contains { $0.occurrenceID == task.occurrenceID } || matches.contains { $0.parentOccurrenceID == task.occurrenceID })
+                        }
                         let open = matching.filter { $0.completedAt == nil && $0.skippedAt == nil }
                         let completed = matching.filter { $0.completedAt != nil }
                         let skipped = matching.filter { $0.skippedAt != nil }
@@ -319,6 +322,30 @@ struct WorkspaceView: View {
     }
 
     private func taskRow(_ task: TaskRecord) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                let children = editor.workspace?.children(of: task.occurrenceID) ?? []
+                if !children.isEmpty {
+                    Button {
+                        if !editor.expandedParents.insert(task.occurrenceID).inserted { editor.expandedParents.remove(task.occurrenceID) }
+                    } label: {
+                        Label("\(children.count)", systemImage: editor.expandedParents.contains(task.occurrenceID) ? "chevron.down" : "chevron.right")
+                    }.buttonStyle(.plain).accessibilityLabel("Подзадачи: \(children.count)")
+                }
+                plainTaskRow(task)
+            }
+            let children = editor.workspace?.children(of: task.occurrenceID) ?? []
+            if task.completedAt != nil && children.contains(where: { $0.completedAt == nil }) {
+                Text("Родитель выполнен · \(children.filter { $0.completedAt == nil }.count) подзадач открыто")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if editor.expandedParents.contains(task.occurrenceID) || task.completedAt != nil {
+                ForEach(children, id: \.occurrenceID) { child in plainTaskRow(child).padding(.leading, 28) }
+            }
+        }
+    }
+
+    private func plainTaskRow(_ task: TaskRecord) -> some View {
         HStack(spacing: 14) {
             Button { editor.setCompleted(task) } label: {
                 Image(systemName: task.skippedAt != nil ? "forward.end.circle" : (task.completedAt == nil ? "circle" : "checkmark.circle.fill"))
@@ -425,6 +452,21 @@ private struct CreationPanel: View {
                 ), accessibilityID: "creation-note")
                 .frame(height: 180)
             }
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Подзадачи").font(.headline)
+                ForEach(Array(editor.draftChildren.enumerated()), id: \.element.id) { index, child in
+                    DisclosureGroup(child.title.isEmpty ? "Новая подзадача" : child.title) {
+                        TextField("Название подзадачи", text: Binding(get: { editor.draftChildren[index].title }, set: { editor.draftChildren[index].title = $0; editor.saveDraft() }))
+                        if let workspace = editor.workspace {
+                            LabelField(workspace: workspace, selection: Binding(get: { editor.draftChildren[index].labelIDs }, set: { editor.draftChildren[index].labelIDs = $0; editor.saveDraft() }))
+                        }
+                        TaskNoteEditor(note: Binding(get: { editor.draftChildren[index].note }, set: { editor.draftChildren[index].note = $0; editor.saveDraft() }), accessibilityID: "child-note-\(child.id)").frame(height: 130)
+                        Button("Удалить подзадачу") { editor.draftChildren.remove(at: index); editor.saveDraft() }
+                    }
+                }
+                Button("Добавить подзадачу") { editor.draftChildren.append(SubtaskDraft()); editor.saveDraft() }
+                Text("Проект и повтор — как у родителя. Метки и заметка — свои.").font(.caption).foregroundStyle(.secondary)
+            }
             if let error = editor.draftError {
                 StorageNotice(message: error)
                 Button("Повторить сохранение черновика") { editor.saveDraft() }
@@ -482,6 +524,12 @@ private struct DetailPanel: View {
                 }
                 .onExitCommand { editor.cancelTitleEdit(); titleFocused = false }
                 .accessibilityLabel("Изменить название").accessibilityIdentifier("detail-title")
+            if task.parentTaskID != nil {
+                if let parent = editor.workspace?.tasks.first(where: { $0.occurrenceID == task.parentOccurrenceID }) {
+                    Button("Родитель: \(parent.title)") { editor.selectTask(parent) }
+                }
+                Text("Проект и расписание — как у родителя. Для своего расписания создайте отдельную задачу.").font(.caption).foregroundStyle(.secondary)
+            } else {
             RecurrenceField(selection: Binding(get: { editor.detailRecurrence }, set: { editor.changeRecurrence($0) }), allowsNoRepeat: task.seriesStart == nil)
             if editor.detailRecurrence != task.recurrence {
                 Button("Применить: этот и будущие") { editor.saveRecurrence() }
@@ -515,6 +563,7 @@ private struct DetailPanel: View {
             ProjectField(projects: editor.workspace?.projects ?? [], selection: Binding(
                 get: { editor.detailProjectID }, set: { editor.changeProject($0) }
             ))
+            }
             if let workspace = editor.workspace {
                 LabelField(workspace: workspace, selection: Binding(
                     get: { editor.detailLabelIDs }, set: { editor.changeLabels($0) }
@@ -528,6 +577,19 @@ private struct DetailPanel: View {
                     set: { editor.detailNote = $0; editor.saveNote() }
                 ), accessibilityID: "detail-note")
                 .frame(height: 220)
+            }
+            if task.parentTaskID == nil {
+                Text("Подзадачи").font(.headline)
+                ForEach(editor.workspace?.children(of: task.occurrenceID) ?? [], id: \.occurrenceID) { child in
+                    HStack {
+                        Button { editor.setCompleted(child) } label: { Image(systemName: child.completedAt == nil ? "circle" : "checkmark.circle.fill") }.buttonStyle(.plain)
+                        Button(child.title) { editor.selectTask(child) }.buttonStyle(.plain)
+                    }
+                }
+                HStack {
+                    TextField("Новая подзадача", text: $editor.newChildTitle).onSubmit(editor.addChild)
+                    Button("Добавить", action: editor.addChild)
+                }
             }
             ToolMenu(editor: editor, task: task)
             if let error = editor.detailError {
