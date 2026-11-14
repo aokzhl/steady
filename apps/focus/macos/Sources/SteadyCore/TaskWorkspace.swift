@@ -385,7 +385,13 @@ public final class TaskWorkspace {
 
     public func previewTimerIncrement(minutes: Int) throws -> TimeInterval? {
         guard (-20...20).contains(minutes) else { throw WorkspaceError.invalidTimerIncrement }
-        return remainingSeconds.map { max(0, $0 + Double(minutes) * 60) }
+        guard let session = activeSession, let budget = session.timerBudgetSeconds else { return nil }
+        let elapsed = session.elapsedSeconds(at: now())
+        let remaining = max(0, max(0, budget - elapsed) + Double(minutes) * 60)
+        guard (elapsed + remaining).isFinite, elapsed + remaining <= TimeToolSession.maximumTimerDurationSeconds else {
+            throw WorkspaceError.invalidTimerDuration
+        }
+        return remaining
     }
 
     /// Drives natural expiry; repeated notifications and Stop share one persisted transition.

@@ -22,6 +22,10 @@ public struct WorkSegment: Identifiable, Equatable, Sendable {
 /// The run's UUID remains its result identity after stopping. Durations are seconds;
 /// start/end instants are stored as numeric UTC epochs, with the historical zone fixed at start.
 public struct TimeToolSession: Identifiable, Equatable, Sendable {
+    /// Largest Double seconds count representable by the UI's signed native integer.
+    /// This is a numeric representation bound, not a product duration limit.
+    public static let maximumTimerDurationSeconds = Double(Int.max).nextDown
+
     public let id: UUID
     public let kind: TimeToolKind
     public let taskID: UUID?

@@ -208,4 +208,48 @@ struct CountdownTests {
         #expect(reopened.timeToolResults.last?.occurrenceID == future.occurrenceID)
         #expect(try reopened.timerDurationSeconds(taskID: future.id) == 300)
     }
+    @Test
+    func unrepresentableDurationRollsBackBeforeStartingAndAllowsValidRetry() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        let instant = Date(timeIntervalSince1970: 1_800_000_000)
+        let workspace = try TaskWorkspace(databaseURL: url, now: { instant })
+        let owner = try workspace.createTask(title: "Без переполнения")
+        #expect(throws: WorkspaceError.invalidTimerDuration) {
+            try workspace.startTimer(occurrenceID: owner.occurrenceID, durationSeconds: 6e21)
+        }
+        #expect(workspace.activeSession == nil)
+        #expect(try workspace.timerDurationSeconds(taskID: owner.id) == nil)
+        let reopened = try TaskWorkspace(databaseURL: url, now: { instant })
+        #expect(reopened.activeSession == nil)
+        #expect(reopened.timeToolResults.isEmpty)
+        #expect(try reopened.timerDurationSeconds(taskID: owner.id) == nil)
+        try reopened.startTimer(occurrenceID: owner.occurrenceID, durationSeconds: 600)
+        #expect(reopened.remainingSeconds == 600)
+        #expect(try reopened.timerDurationSeconds(taskID: owner.id) == 600)
+    }
+
+    @Test
+    func durationBoundaryRejectsAnOverflowingIncrementWithoutChangingTheRun() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        let instant = Date(timeIntervalSince1970: 1_800_000_000)
+        let workspace = try TaskWorkspace(databaseURL: url, now: { instant })
+        let owner = try workspace.createTask(title: "Граница длительности")
+        // Largest Double below 2^63: exactly representable as a signed 64-bit seconds count.
+        let duration: TimeInterval = 9_223_372_036_854_774_784
+        try workspace.startTimer(occurrenceID: owner.occurrenceID, durationSeconds: duration)
+        let original = try #require(workspace.activeSession)
+        #expect(throws: WorkspaceError.invalidTimerDuration) { try workspace.previewTimerIncrement(minutes: 20) }
+        #expect(throws: WorkspaceError.invalidTimerDuration) { try workspace.adjustTimer(minutes: 20) }
+        #expect(workspace.activeSession == original)
+        #expect(workspace.remainingSeconds == duration)
+        let reopened = try TaskWorkspace(databaseURL: url, now: { instant })
+        #expect(reopened.remainingSeconds == duration)
+        #expect(try reopened.timerDurationSeconds(taskID: owner.id) == duration)
+        #expect(reopened.activeSession?.id == original.id)
+        #expect(reopened.activeSession?.isPaused == true)
+    }
 }

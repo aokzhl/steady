@@ -474,6 +474,10 @@ final class WorkspaceEditor {
             timerPromptError = "Введите длительность больше нуля в минутах."
             return
         }
+        guard (minutes * 60).isFinite, minutes * 60 <= TimeToolSession.maximumTimerDurationSeconds else {
+            timerPromptError = WorkspaceError.invalidTimerDuration.localizedDescription
+            return
+        }
         do {
             try workspace?.startTimer(occurrenceID: timerPromptTask?.occurrenceID, durationSeconds: minutes * 60)
             timerPromptVisible = false

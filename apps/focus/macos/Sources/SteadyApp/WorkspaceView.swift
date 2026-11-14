@@ -727,11 +727,13 @@ private struct SessionBar: View {
                                 Stepper("\(increment > 0 ? "+" : "")\(increment) мин", value: $increment, in: -20...20)
                                     .accessibilityIdentifier("timer-increment-minutes")
                                 TimelineView(.periodic(from: .now, by: 1)) { _ in
-                                    Text("Будет: " + durationLabel(max(0, (editor.workspace?.remainingSeconds ?? 0) + Double(increment) * 60)))
+                                    let preview = try? editor.workspace?.previewTimerIncrement(minutes: increment)
+                                    Text(preview.map { "Будет: " + durationLabel($0) } ?? "Длительность слишком велика")
                                         .monospacedDigit().accessibilityIdentifier("timer-increment-preview")
                                 }
                                 Button("Применить") { editor.adjustTimer(minutes: increment) }
                                     .accessibilityIdentifier("timer-increment-apply")
+                                    .disabled((try? editor.workspace?.previewTimerIncrement(minutes: increment)) == nil)
                             }.padding(18).frame(width: 260)
                         }
                 }
@@ -790,8 +792,9 @@ private struct RunHistory: View {
 }
 
 private func durationLabel(_ seconds: TimeInterval) -> String {
-    let value = Int(max(0, seconds))
-    return String(format: "%02d:%02d:%02d", value / 3600, (value % 3600) / 60, value % 60)
+    guard seconds.isFinite, let value = Int(exactly: max(0, seconds).rounded(.towardZero)) else { return "—" }
+    let hours = String(value / 3600)
+    return (hours.count < 2 ? "0" + hours : hours) + String(format: ":%02d:%02d", (value % 3600) / 60, value % 60)
 }
 
 private func historyDate(_ date: Date, zone: String) -> String {

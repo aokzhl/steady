@@ -25,7 +25,7 @@ public enum WorkspaceError: Error, Equatable, LocalizedError {
         case .invalidRecurrence:
             "Выберите хотя бы один день недели."
         case .timerDurationRequired: "Задайте длительность таймера перед запуском."
-        case .invalidTimerDuration: "Длительность таймера должна быть больше нуля."
+        case .invalidTimerDuration: "Введите положительную длительность в допустимом числовом диапазоне."
         case .invalidTimerIncrement: "Выберите приращение от −20 до +20 минут."
         case .invalidDay:
             "Выберите существующую календарную дату."
@@ -656,7 +656,7 @@ final class SQLiteDatabase {
             if kind == .timer {
                 if duration == nil, let owner { duration = try timerDurationSeconds(taskID: owner.id) }
                 guard let value = duration else { throw WorkspaceError.timerDurationRequired }
-                guard value.isFinite, value > 0 else { throw WorkspaceError.invalidTimerDuration }
+                guard value.isFinite, value > 0, value <= TimeToolSession.maximumTimerDurationSeconds else { throw WorkspaceError.invalidTimerDuration }
                 if let owner, durationSeconds != nil {
                     try execute("INSERT INTO task_timer_settings (task_id, duration_seconds) VALUES (?, ?) ON CONFLICT(task_id) DO UPDATE SET duration_seconds = excluded.duration_seconds", [.text(owner.id.uuidString), .number(value)])
                 }
@@ -715,7 +715,11 @@ final class SQLiteDatabase {
                 guard session.kind == .timer, let budget = session.timerBudgetSeconds else { return }
                 let elapsed = session.elapsedSeconds(at: instant)
                 let remaining = max(0, budget - elapsed + Double(minutes) * 60)
-                session.timerBudgetSeconds = elapsed + remaining
+                let adjustedBudget = elapsed + remaining
+                guard adjustedBudget.isFinite, adjustedBudget <= TimeToolSession.maximumTimerDurationSeconds else {
+                    throw WorkspaceError.invalidTimerDuration
+                }
+                session.timerBudgetSeconds = adjustedBudget
                 if remaining == 0 { session.stop(at: instant, reason: .manual) }
                 else if !session.isPaused {
                     session.closeSegment(at: instant)
