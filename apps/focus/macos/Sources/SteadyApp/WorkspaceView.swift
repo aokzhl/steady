@@ -1009,19 +1009,30 @@ private struct ToolMenu: View {
                 Text("Верните задачу в невыполненные для нового запуска")
             }
         } label: {
-            if compact {
-                HStack(spacing: 4) {
-                    Image(systemName: "play").font(.system(size: 11))
-                    Image(systemName: "chevron.down").font(.system(size: 7))
-                }
-                .foregroundStyle(Palette.accent).frame(width: 40, height: 32)
-                .background(Color(red: 48/255, green: 47/255, blue: 59/255), in: Capsule())
-            }
+            if compact { Image(systemName: "play") }
             else { Label(task == nil ? "Без задачи" : "Инструменты", systemImage: "stopwatch") }
         }
         .accessibilityLabel(task.map { "Инструменты: " + $0.title } ?? "Инструменты без задачи")
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
+        // AppKit simplifies Menu labels; draw the compact affordance outside that label.
+        .opacity(compact ? 0.01 : 1)
+        .frame(width: compact ? 40 : nil, height: compact ? 32 : nil)
+        .background {
+            if compact {
+                Capsule().fill(Color(red: 48/255, green: 47/255, blue: 59/255))
+            }
+        }
+        .overlay {
+            if compact {
+                HStack(spacing: 4) {
+                    Image(systemName: "play").font(.system(size: 11))
+                    Image(systemName: "chevron.down").font(.system(size: 7))
+                }
+                .foregroundStyle(Palette.accent)
+                .allowsHitTesting(false).accessibilityHidden(true)
+            }
+        }
         .fixedSize()
         .help("Выбрать инструмент времени" + (task == nil ? " без задачи" : ""))
         .accessibilityIdentifier(task.map { "task-tools-\($0.id)" } ?? "free-tools")
