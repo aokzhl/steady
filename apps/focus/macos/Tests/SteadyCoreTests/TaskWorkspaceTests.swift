@@ -36,7 +36,7 @@ struct TaskWorkspaceTests {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
         let workspace = try TaskWorkspace(databaseURL: directory.appendingPathComponent("steady.sqlite"), now: { instant }, calendar: { calendar })
-        try workspace.createTask(title: "Задача на четырнадцатое")
+        try workspace.createTask(title: "Задача на четырнадцатое", plannedDay: workspace.today)
         try await confirmation("Сегодня обновляет интерфейс после полуночи") { notified in
             withObservationTracking { _ = workspace.today } onChange: { notified() }
             instant = instant.addingTimeInterval(3600)
@@ -54,10 +54,10 @@ struct TaskWorkspaceTests {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
         let workspace = try TaskWorkspace(databaseURL: directory.appendingPathComponent("steady.sqlite"), now: { instant }, calendar: { calendar })
-        let before = try workspace.createTask(title: "До смены зоны")
+        let before = try workspace.createTask(title: "До смены зоны", plannedDay: workspace.today)
         calendar.timeZone = try #require(TimeZone(identifier: "Asia/Almaty"))
         try workspace.reload()
-        let after = try workspace.createTask(title: "После смены зоны")
+        let after = try workspace.createTask(title: "После смены зоны", plannedDay: workspace.today)
         #expect(workspace.today == "2026-11-15")
         #expect(after.plannedDay == "2026-11-15")
         #expect(after.timeZoneIdentifier == "Asia/Almaty")
@@ -105,7 +105,7 @@ struct TaskWorkspaceTests {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try #require(TimeZone(identifier: "Asia/Almaty"))
         let workspace = try TaskWorkspace(databaseURL: url, now: { instant }, calendar: { calendar })
-        let first = try workspace.createTask(title: "  Коран: 'чтение' 📖  ")
+        let first = try workspace.createTask(title: "  Коран: 'чтение' 📖  ", plannedDay: workspace.today)
         let second = try workspace.createTask(title: "Коран: 'чтение' 📖")
 
         #expect(first.title == "Коран: 'чтение' 📖")
