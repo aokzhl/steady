@@ -1,6 +1,17 @@
 import SteadyCore
 import SwiftUI
 
+private enum CalendarCellMetrics {
+    static let padding: CGFloat = 5
+    static let spacing: CGFloat = 3
+    static let headerHeight: CGFloat = 14
+    static let previewHeight: CGFloat = 19
+    static let overflowHeight: CGFloat = 12
+    // Header, overflow, and the gaps before overflow / final spacer remain visible.
+    static let reservedHeight = padding * 2 + headerHeight + overflowHeight + spacing * 2
+    static let previewStride = previewHeight + spacing
+}
+
 struct MonthCalendar: View {
     @Bindable var editor: WorkspaceEditor
     @State private var undatedExpanded = false
@@ -27,7 +38,7 @@ struct MonthCalendar: View {
                     let rows = (month.leadingDays + month.days.count + 6) / 7
                     let height = max(1, (geometry.size.height - CGFloat(rows - 1) * 4) / CGFloat(rows))
                     let width = max(1, (geometry.size.width - 24) / 7)
-                    let previewCount = max(0, Int((height - 48) / 22))
+                    let previewCount = max(0, Int((height - CalendarCellMetrics.reservedHeight) / CalendarCellMetrics.previewStride))
                     VStack(spacing: 4) {
                         ForEach(0..<rows, id: \.self) { row in
                             HStack(spacing: 4) {
@@ -51,7 +62,7 @@ struct MonthCalendar: View {
     }
 
     private func dayCell(_ day: TaskCalendarDay, previewCount: Int) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: CalendarCellMetrics.spacing) {
             HStack(spacing: 3) {
                 Button(String(day.day.suffix(2))) { editor.openCalendarDay(day.day) }
                     .accessibilityLabel("Открыть день " + day.day)
@@ -59,24 +70,26 @@ struct MonthCalendar: View {
                 Button { editor.createOnDay(day.day) } label: { Image(systemName: "plus") }
                     .accessibilityLabel("Создать на " + day.day)
             }.buttonStyle(.plain).font(.system(size: 11))
+                .frame(height: CalendarCellMetrics.headerHeight)
             ForEach(Array(day.tasks.prefix(previewCount)), id: \.occurrenceID) { task in
                 Button { editor.calendarDay = day.day; editor.selectTask(task) } label: {
                     HStack(spacing: 3) {
                         if task.completedAt != nil { Image(systemName: "checkmark.circle.fill") }
                         Text(task.title).lineLimit(1)
                     }.font(.system(size: 10)).frame(maxWidth: .infinity, alignment: .leading)
-                }.buttonStyle(.plain).frame(height: 19)
+                }.buttonStyle(.plain).frame(height: CalendarCellMetrics.previewHeight)
                     .accessibilityLabel(task.title + (task.completedAt == nil ? "" : " · Выполнено"))
             }
             if day.tasks.count > previewCount {
                 Button("Ещё \(day.tasks.count - previewCount)") { editor.openCalendarDay(day.day) }
-                    .font(.system(size: 10)).buttonStyle(.plain).foregroundStyle(.purple)
+                    .font(.system(size: 10)).buttonStyle(.plain).foregroundStyle(Palette.accent)
+                    .frame(height: CalendarCellMetrics.overflowHeight)
                     .accessibilityLabel("Ещё \(day.tasks.count - previewCount) · " + day.day)
             }
             Spacer(minLength: 0)
-        }.padding(5)
-            .background(day.day == editor.workspace?.today ? Color.purple.opacity(0.16) : Color.white.opacity(day.isInPeriod ? 0.055 : 0.018), in: RoundedRectangle(cornerRadius: 5))
-            .overlay(RoundedRectangle(cornerRadius: 5).stroke(day.day == editor.calendarDay ? Color.purple : Color.clear))
+        }.padding(CalendarCellMetrics.padding)
+            .background(day.day == editor.workspace?.today ? Palette.accent.opacity(0.16) : Color.white.opacity(day.isInPeriod ? 0.055 : 0.018), in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(day.day == editor.calendarDay ? Palette.accent : Color.clear))
             .clipped()
     }
 
