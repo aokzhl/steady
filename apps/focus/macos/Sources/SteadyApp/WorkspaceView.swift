@@ -298,7 +298,8 @@ struct WorkspaceView: View {
                 Picker("Вид", selection: $editor.presentation) {
                     Text("Список").tag(TaskPresentation.list)
                     Text("Календарь").tag(TaskPresentation.calendar)
-                }.pickerStyle(.segmented).frame(width: 170)
+                }.pickerStyle(.segmented).labelsHidden().frame(width: 170)
+                    .accessibilityLabel("Вид")
                     .accessibilityIdentifier("task-presentation")
             }
             HStack(spacing: 2) {
