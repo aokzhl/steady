@@ -403,10 +403,34 @@ public final class TaskWorkspace {
     public var elapsedSeconds: TimeInterval {
         guard let session = activeSession else { return 0 }
         let measured = session.elapsedSeconds(at: now())
+        if let state = session.pomodoro, state.stage == .work {
+            return min(state.focusStartElapsed + state.focusBudgetSeconds, measured)
+        }
         return session.timerBudgetSeconds.map { min($0, measured) } ?? measured
     }
 
     public var remainingSeconds: TimeInterval? { activeSession?.remainingSeconds(at: now()) }
+
+    public var restRemainingSeconds: TimeInterval? {
+        guard let state = activeSession?.pomodoro, state.stage == .rest else { return nil }
+        return state.restRemaining(at: now())
+    }
+
+    public func startPomodoro(occurrenceID: UUID? = nil) throws {
+        try retrySessionSave()
+        try database.startPomodoro(occurrenceID: occurrenceID, at: now(), timeZone: calendar().timeZone.identifier)
+        try loadTimeTools()
+    }
+
+    public func startRest() throws {
+        let instant = now()
+        try persistSessionCommand(at: instant) { try database.changeSession(.startRest, at: instant) }
+    }
+
+    public func backToWork() throws {
+        let instant = now()
+        try persistSessionCommand(at: instant) { try database.changeSession(.backToWork, at: instant) }
+    }
 
     public func timerDurationSeconds(taskID: UUID) throws -> TimeInterval? {
         try database.timerDurationSeconds(taskID: taskID)
@@ -420,9 +444,11 @@ public final class TaskWorkspace {
 
     public func previewTimerIncrement(minutes: Int) throws -> TimeInterval? {
         guard (-20...20).contains(minutes) else { throw WorkspaceError.invalidTimerIncrement }
-        guard let session = activeSession, let budget = session.timerBudgetSeconds else { return nil }
+        guard let session = activeSession,
+              session.pomodoro == nil || session.pomodoro?.stage == .work,
+              let remainingNow = session.remainingSeconds(at: now()) else { return nil }
         let elapsed = session.elapsedSeconds(at: now())
-        let remaining = max(0, max(0, budget - elapsed) + Double(minutes) * 60)
+        let remaining = max(0, remainingNow + Double(minutes) * 60)
         guard (elapsed + remaining).isFinite, elapsed + remaining <= TimeToolSession.maximumTimerDurationSeconds else {
             throw WorkspaceError.invalidTimerDuration
         }
@@ -431,8 +457,12 @@ public final class TaskWorkspace {
 
     /// Drives natural expiry; repeated notifications and Stop share one persisted transition.
     public func updateTimer() throws {
-        guard activeSession?.kind == .timer, activeSession?.isPaused == false, !sessionNeedsSave,
-              remainingSeconds == 0 else { return }
+        guard let session = activeSession, session.kind != .stopwatch, !session.isPaused, !sessionNeedsSave else { return }
+        if session.pomodoro?.stage == .rest {
+            guard restRemainingSeconds == 0 else { return }
+        } else {
+            guard session.pomodoro == nil || session.pomodoro?.stage == .work, remainingSeconds == 0 else { return }
+        }
         let instant = now()
         try persistSessionCommand(at: instant) { try database.changeSession(.tick, at: instant) }
     }
@@ -481,7 +511,10 @@ public final class TaskWorkspace {
             if let failure = error as? WorkspaceError, case .storage = failure, var frozen = activeSession {
                 if frozen.finishTimerIfNeeded(at: instant) {
                     frozen.stoppedAt = nil // Frozen for retry; the persisted result still does not exist.
-                } else { frozen.closeSegment(at: instant) }
+                } else {
+                    frozen.finishPomodoroIfNeeded(at: instant)
+                    frozen.pausePomodoro(at: instant)
+                }
                 activeSession = frozen
                 pendingPausedSession = frozen
             }

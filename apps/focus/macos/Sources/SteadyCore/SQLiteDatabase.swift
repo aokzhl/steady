@@ -89,7 +89,7 @@ final class SQLiteDatabase {
                 guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
                 return Int(sqlite3_column_int(query, 0))
             }
-            guard version <= 10 else { throw WorkspaceError.unsupportedSchema(version) }
+            guard version <= 11 else { throw WorkspaceError.unsupportedSchema(version) }
             if version == 0 { try migrateToVersionOne() }
             if version < 2 { try migrateToVersionTwo() }
             if version < 3 { try migrateToVersionThree() }
@@ -100,6 +100,7 @@ final class SQLiteDatabase {
             if version < 8 { try migrateToVersionEight() }
             if version < 9 { try migrateToVersionNine() }
             if version < 10 { try migrateToVersionTen() }
+            if version < 11 { try migrateToVersionEleven() }
         } catch {
             sqlite3_close(connection)
             connection = nil
@@ -524,7 +525,10 @@ final class SQLiteDatabase {
             }
             guard (record.completedAt != nil) != completed else { return current }
             if completed, var session = try activeTimeToolSession(), session.occurrenceID == occurrenceID {
-                if !session.finishTimerIfNeeded(at: instant) { session.stop(at: instant) }
+                if session.kind == .pomodoro {
+                    session.finishPomodoroIfNeeded(at: instant)
+                    session.stop(at: instant)
+                } else if !session.finishTimerIfNeeded(at: instant) { session.stop(at: instant) }
                 try saveTimeToolSession(session)
             }
             let value: Value = completed ? .number(instant.timeIntervalSince1970) : .null
@@ -674,6 +678,19 @@ final class SQLiteDatabase {
         }
     }
 
+    private func migrateToVersionEleven() throws {
+        try transaction {
+            try execute("ALTER TABLE time_tool_runs ADD COLUMN pomodoro_state TEXT")
+            try execute("CREATE TABLE pomodoro_cycle (id INTEGER PRIMARY KEY CHECK(id = 1), full_intervals INTEGER NOT NULL CHECK(full_intervals >= 0))")
+            try execute("INSERT INTO pomodoro_cycle VALUES (1, 0)")
+            try execute("PRAGMA user_version = 11")
+        }
+    }
+
+    func startPomodoro(occurrenceID: UUID?, at instant: Date, timeZone: String) throws {
+        try startTimeTool(kind: .pomodoro, occurrenceID: occurrenceID, durationSeconds: nil, at: instant, timeZone: timeZone)
+    }
+
     func timerDurationSeconds(taskID: UUID) throws -> TimeInterval? {
         try statement("SELECT duration_seconds FROM task_timer_settings WHERE task_id = ?", [.text(taskID.uuidString)]) { query in
             let result = sqlite3_step(query)
@@ -712,11 +729,18 @@ final class SQLiteDatabase {
                     try execute("INSERT INTO task_timer_settings (task_id, duration_seconds) VALUES (?, ?) ON CONFLICT(task_id) DO UPDATE SET duration_seconds = excluded.duration_seconds", [.text(owner.id.uuidString), .number(value)])
                 }
             }
-            let session = TimeToolSession(
+            var session = TimeToolSession(
                 id: UUID(), kind: kind, taskID: owner?.id, occurrenceID: owner?.occurrenceID,
                 ownerTitle: owner?.title ?? "Без задачи", startedAt: instant, timeZoneIdentifier: timeZone,
                 stoppedAt: nil, segments: [WorkSegment(id: UUID(), startedAt: instant, endedAt: nil)], timerBudgetSeconds: duration
             )
+            if kind == .pomodoro {
+                let cycleCount = try statement("SELECT full_intervals FROM pomodoro_cycle WHERE id = 1") { query in
+                    guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
+                    return Int(sqlite3_column_int64(query, 0))
+                }
+                session.pomodoro = PomodoroState(cycleCount: cycleCount)
+            }
             try saveTimeToolSession(session)
         }
     }
@@ -727,7 +751,10 @@ final class SQLiteDatabase {
         try transaction {
             guard var session = try activeTimeToolSession(), !session.isPaused,
                   let boundary = session.segments.last?.startedAt else { return }
-            session.closeSegment(at: boundary)
+            if session.pomodoro?.stage == .rest {
+                let restBoundary = session.pomodoro?.restSegments.last?.startedAt ?? boundary
+                session.pomodoro?.closeRest(at: restBoundary)
+            } else { session.closeSegment(at: boundary) }
             try saveTimeToolSession(session)
         }
     }
@@ -736,18 +763,23 @@ final class SQLiteDatabase {
         try transaction {
             guard try activeTimeToolSession()?.id == session.id else { throw WorkspaceError.sessionOccupied }
             var saved = session
-            if saved.endReason == .natural, let boundary = saved.segments.last?.endedAt {
+            if saved.kind == .timer, saved.endReason == .natural, let boundary = saved.segments.last?.endedAt {
                 saved.stop(at: boundary, reason: .natural)
             }
             try saveTimeToolSession(saved)
         }
     }
 
-    enum SessionCommand { case pause, resume, stop, tick, adjust(Int) }
+    enum SessionCommand { case pause, resume, stop, tick, adjust(Int), startRest, backToWork }
 
     func changeSession(_ command: SessionCommand, at instant: Date) throws {
         try transaction {
             guard var session = try activeTimeToolSession() else { return }
+            if session.kind == .pomodoro {
+                try changePomodoro(&session, command: command, at: instant)
+                try saveTimeToolSession(session)
+                return
+            }
             if session.finishTimerIfNeeded(at: instant) {
                 try saveTimeToolSession(session)
                 return
@@ -760,25 +792,26 @@ final class SQLiteDatabase {
                 session.segments.append(WorkSegment(id: UUID(), startedAt: start, endedAt: nil))
             case .stop:
                 session.stop(at: instant)
-            case .tick: return
+            case .tick, .startRest, .backToWork: return
             case .adjust(let minutes):
-                guard (-20...20).contains(minutes) else { throw WorkspaceError.invalidTimerIncrement }
-                guard session.kind == .timer, let budget = session.timerBudgetSeconds else { return }
-                let elapsed = session.elapsedSeconds(at: instant)
-                let remaining = max(0, budget - elapsed + Double(minutes) * 60)
-                let adjustedBudget = elapsed + remaining
-                guard adjustedBudget.isFinite, adjustedBudget <= TimeToolSession.maximumTimerDurationSeconds else {
-                    throw WorkspaceError.invalidTimerDuration
-                }
-                session.timerBudgetSeconds = adjustedBudget
-                if remaining == 0 { session.stop(at: instant, reason: .manual) }
-                else if !session.isPaused {
-                    session.closeSegment(at: instant)
-                    let start = max(instant, session.segments.last?.endedAt ?? session.startedAt)
-                    session.segments.append(WorkSegment(id: UUID(), startedAt: start, endedAt: nil))
-                }
+                try session.adjustRemaining(minutes: minutes, at: instant)
             }
             try saveTimeToolSession(session)
+        }
+    }
+
+    private func changePomodoro(_ session: inout TimeToolSession, command: SessionCommand, at instant: Date) throws {
+        let expired = session.finishPomodoroIfNeeded(at: instant)
+        switch command {
+        case .stop: session.stop(at: instant)
+        case .pause: session.pausePomodoro(at: instant)
+        case .resume: session.resumePomodoro(at: instant)
+        case .tick: break
+        case .startRest: session.startPomodoroRest(at: instant)
+        case .backToWork: session.returnToPomodoroWork(at: instant)
+        case .adjust(let minutes):
+            guard !expired else { return }
+            try session.adjustRemaining(minutes: minutes, at: instant)
         }
     }
 
@@ -790,7 +823,7 @@ final class SQLiteDatabase {
 
     private func timeToolSessions(stopped: Bool) throws -> [TimeToolSession] {
         try statement("""
-            SELECT id, kind, task_id, occurrence_id, owner_title, started_at, time_zone, stopped_at, timer_budget_seconds, end_reason
+            SELECT id, kind, task_id, occurrence_id, owner_title, started_at, time_zone, stopped_at, timer_budget_seconds, end_reason, pomodoro_state
             FROM time_tool_runs WHERE stopped_at IS \(stopped ? "NOT NULL" : "NULL") ORDER BY started_at, rowid
             """) { query in
             var sessions: [TimeToolSession] = []
@@ -818,7 +851,8 @@ final class SQLiteDatabase {
                     startedAt: date(query, 5), timeZoneIdentifier: text(query, 6),
                     stoppedAt: optionalDate(query, 7), segments: segments,
                     timerBudgetSeconds: sqlite3_column_type(query, 8) == SQLITE_NULL ? nil : sqlite3_column_double(query, 8),
-                    endReason: TimeToolEndReason(rawValue: text(query, 9))
+                    endReason: TimeToolEndReason(rawValue: text(query, 9)),
+                    pomodoro: sqlite3_column_type(query, 10) == SQLITE_NULL ? nil : try decodePomodoro(text(query, 10))
                 ))
                 result = sqlite3_step(query)
             }
@@ -829,16 +863,20 @@ final class SQLiteDatabase {
 
     private func saveTimeToolSession(_ session: TimeToolSession) throws {
         try execute("""
-            INSERT INTO time_tool_runs (id, kind, task_id, occurrence_id, owner_title, started_at, time_zone, stopped_at, timer_budget_seconds, end_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET stopped_at = excluded.stopped_at, timer_budget_seconds = excluded.timer_budget_seconds, end_reason = excluded.end_reason
+            INSERT INTO time_tool_runs (id, kind, task_id, occurrence_id, owner_title, started_at, time_zone, stopped_at, timer_budget_seconds, end_reason, pomodoro_state)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET stopped_at = excluded.stopped_at, timer_budget_seconds = excluded.timer_budget_seconds, end_reason = excluded.end_reason, pomodoro_state = excluded.pomodoro_state
             """, [.text(session.id.uuidString), .text(session.kind.rawValue),
                   session.taskID.map { .text($0.uuidString) } ?? .null,
                   session.occurrenceID.map { .text($0.uuidString) } ?? .null,
                   .text(session.ownerTitle), .number(session.startedAt.timeIntervalSince1970),
                   .text(session.timeZoneIdentifier), session.stoppedAt.map { .number($0.timeIntervalSince1970) } ?? .null,
                   session.timerBudgetSeconds.map { .number($0) } ?? .null,
-                  session.endReason.map { .text($0.rawValue) } ?? .null])
+                  session.endReason.map { .text($0.rawValue) } ?? .null,
+                  try session.pomodoro.map { .text(String(decoding: try encodePomodoro($0), as: UTF8.self)) } ?? .null])
+        if let state = session.pomodoro {
+            try execute("UPDATE pomodoro_cycle SET full_intervals = ? WHERE id = 1", [.number(Double(state.cycleCount))])
+        }
         for (position, segment) in session.segments.enumerated() {
             try execute("""
                 INSERT INTO time_tool_segments (id, run_id, position, started_at, ended_at) VALUES (?, ?, ?, ?, ?)
@@ -846,6 +884,18 @@ final class SQLiteDatabase {
                 """, [.text(segment.id.uuidString), .text(session.id.uuidString), .number(Double(position)),
                       .number(segment.startedAt.timeIntervalSince1970), segment.endedAt.map { .number($0.timeIntervalSince1970) } ?? .null])
         }
+    }
+
+    private func encodePomodoro(_ state: PomodoroState) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        return try encoder.encode(state)
+    }
+
+    private func decodePomodoro(_ value: String) throws -> PomodoroState {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        return try decoder.decode(PomodoroState.self, from: Data(value.utf8))
     }
 
     private func date(_ query: OpaquePointer, _ index: Int32) -> Date {

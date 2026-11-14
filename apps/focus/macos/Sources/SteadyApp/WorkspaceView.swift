@@ -711,7 +711,8 @@ private struct ToolMenu: View {
         Menu {
             Button(timerTitle) { editor.requestTimer(task) }
                 .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil || task?.skippedAt != nil)
-            Button("Помодоро · Не задано") {}.disabled(true)
+            Button("Помодоро · 25 / 5 / 15 · после 4") { editor.startPomodoro(task) }
+                .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil || task?.skippedAt != nil)
             Button("Секундомер · Счёт вверх") { editor.startStopwatch(task) }
                 .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil || task?.skippedAt != nil)
             if editor.workspace?.activeSession != nil {
@@ -741,32 +742,54 @@ private struct SessionBar: View {
     @State private var incrementVisible = false
     @State private var increment = 5
 
+    private var canAdjust: Bool {
+        session.kind == .timer || session.pomodoro?.stage == .work
+    }
+
+    private var sessionStatus: String {
+        guard let state = session.pomodoro else {
+            return (session.kind == .timer ? "Таймер" : "Секундомер") + (session.isPaused ? " · Пауза" : " · Работа")
+        }
+        let stage: String
+        switch state.stage {
+        case .work: stage = "Работа"
+        case .rest: stage = state.restIsLong ? "Длинный отдых" : "Отдых"
+        case .waitingBreak: stage = "Ожидание отдыха"
+        case .waitingNext: stage = state.focusFinished ? "Ожидание фокуса" : "Ожидание возврата к работе"
+        }
+        return "Помодоро · " + stage + (session.isPaused ? " · Пауза" : "")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 16) {
-                Image(systemName: session.kind == .timer ? "timer" : "stopwatch").foregroundStyle(Palette.accent)
+                Image(systemName: session.kind == .stopwatch ? "stopwatch" : "timer").foregroundStyle(Palette.accent)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text((session.kind == .timer ? "Таймер" : "Секундомер") + (session.isPaused ? " · Пауза" : " · Работа"))
+                    Text(sessionStatus)
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                     Text(session.ownerTitle).font(.system(size: 13, weight: .medium)).lineLimit(1)
                 }
                 Spacer()
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    let elapsed = durationLabel(session.kind == .timer ? (editor.workspace?.remainingSeconds ?? 0) : (editor.workspace?.elapsedSeconds ?? 0))
+                    let elapsed = durationLabel(session.pomodoro?.stage == .rest ? (editor.workspace?.restRemainingSeconds ?? 0) : session.kind != .stopwatch ? (editor.workspace?.remainingSeconds ?? 0) : (editor.workspace?.elapsedSeconds ?? 0))
                     VStack(alignment: .trailing, spacing: 3) {
                         Text(elapsed)
                             .font(.system(size: 24, weight: .medium, design: .monospaced))
-                            .accessibilityLabel(session.kind == .timer ? "Осталось времени" : "Прошло активного времени")
+                            .accessibilityLabel(session.kind != .stopwatch ? "Осталось времени" : "Прошло активного времени")
                             .accessibilityValue(elapsed)
                             .accessibilityIdentifier("session-elapsed")
-                            .onHover { if $0 && session.kind == .timer { incrementVisible = true } }
-                        if session.kind == .timer {
+                            .onHover { if $0 && canAdjust { incrementVisible = true } }
+                        if session.kind != .stopwatch {
                             Text("Факт: " + durationLabel(editor.workspace?.elapsedSeconds ?? 0))
                                 .font(.system(size: 11)).foregroundStyle(.secondary)
+                            if let state = session.pomodoro, !state.focusFinished, state.stage != .work {
+                                Text("Остаток фокуса: " + durationLabel(editor.workspace?.remainingSeconds ?? 0))
+                                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
-                if session.kind == .timer {
+                if canAdjust {
                     Button { incrementVisible.toggle() } label: { Image(systemName: "plusminus") }
                         .accessibilityLabel("Изменить оставшееся время")
                         .accessibilityIdentifier("timer-increment")
@@ -791,8 +814,20 @@ private struct SessionBar: View {
                     Button("К текущей задаче", action: editor.showActiveSessionOwner)
                         .accessibilityIdentifier("session-owner")
                 }
-                Button(session.isPaused ? "Продолжить" : "Пауза", action: editor.toggleSessionPause)
-                    .accessibilityIdentifier("session-pause")
+                if session.pomodoro?.stage == .work || session.pomodoro?.stage == .rest || session.pomodoro == nil {
+                    Button(session.isPaused ? "Продолжить" : "Пауза", action: editor.toggleSessionPause)
+                        .accessibilityIdentifier("session-pause")
+                }
+                if let state = session.pomodoro {
+                    if state.stage == .work || state.stage == .waitingBreak {
+                        Button(state.stage == .work ? "Ранний отдых" : "Начать отдых", action: editor.startRest)
+                            .accessibilityIdentifier("session-rest")
+                    }
+                    if state.stage != .work {
+                        Button(state.focusFinished ? (state.stage == .waitingNext ? "Следующий фокус" : "Пропустить отдых") : "К работе", action: editor.backToWork)
+                            .accessibilityIdentifier("session-work")
+                    }
+                }
                 Button("Стоп", action: editor.stopSession)
                     .accessibilityIdentifier("session-stop")
             }
@@ -820,12 +855,16 @@ private struct RunHistory: View {
             ForEach(results.reversed()) { result in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
-                        Label(result.kind == .timer ? "Таймер" : "Секундомер", systemImage: result.kind == .timer ? "timer" : "stopwatch")
+                        Label(result.kind == .pomodoro ? "Помодоро" : result.kind == .timer ? "Таймер" : "Секундомер", systemImage: result.kind == .stopwatch ? "stopwatch" : "timer")
                         Spacer()
                         Text(durationLabel(result.durationSeconds)).monospacedDigit()
                     }
                     if result.kind == .timer {
                         Text(result.endReason == .natural ? "Время вышло" : result.endReason == .manual ? "Остаток уменьшен до нуля" : "Остановлен вручную")
+                            .foregroundStyle(.secondary)
+                    }
+                    if let state = result.pomodoro {
+                        Text("Полных помодоро: \(state.fullPomodoros) · 25 / 5 / 15 · после 4")
                             .foregroundStyle(.secondary)
                     }
                     Text(result.ownerTitle)
