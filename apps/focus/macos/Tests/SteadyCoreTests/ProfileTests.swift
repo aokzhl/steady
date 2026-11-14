@@ -1,23 +1,36 @@
 import Foundation
+import Observation
 import SteadyCore
 import Testing
 
 @MainActor
 struct ProfileTests {
-    @Test func profilesAndInheritedOverridesPersistAndRunsKeepTheirSnapshot() throws {
+    @Test func profilesAndInheritedOverridesPersistAndRunsKeepTheirSnapshot() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("steady.sqlite")
         var instant = Date(timeIntervalSince1970: 1_800_000_000)
         let workspace = try TaskWorkspace(databaseURL: url, now: { instant })
-        #expect(workspace.pomodoroProfiles.first?.parameters == PomodoroParameters())
+        let seeded = try #require(workspace.pomodoroProfiles.first?.parameters)
+        #expect(seeded.workSeconds == 1500)
+        #expect(seeded.shortRestSeconds == 300)
+        #expect(seeded.longRestSeconds == 900)
+        #expect(seeded.longRestAfter == 4)
         let custom = PomodoroParameters(workSeconds: 600, shortRestSeconds: 120, longRestSeconds: 420, longRestAfter: 3)
         let profile = try workspace.savePomodoroProfile(title: "Чтение", parameters: custom)
-        try workspace.selectPomodoroProfile(id: profile.id)
+        try await confirmation("Profile selection refreshes the displayed parameters") { notified in
+            withObservationTracking { _ = try? workspace.pomodoroParameters() } onChange: { notified() }
+            try workspace.selectPomodoroProfile(id: profile.id)
+        }
+        #expect(try workspace.pomodoroParameters() == custom)
         try workspace.startPomodoro()
         #expect(workspace.remainingSeconds == 600)
         instant += 30
-        _ = try workspace.savePomodoroProfile(id: profile.id, title: "Чтение", parameters: PomodoroParameters())
+        try await confirmation("Profile editing refreshes the displayed parameters during a run") { notified in
+            withObservationTracking { _ = try? workspace.pomodoroParameters() } onChange: { notified() }
+            _ = try workspace.savePomodoroProfile(id: profile.id, title: "Чтение", parameters: PomodoroParameters())
+        }
+        #expect(try workspace.pomodoroParameters() == seeded)
         #expect(workspace.activeSession?.pomodoro?.parameters == custom)
         try workspace.stopSession()
         let child = SubtaskDraft(title: "Глава", note: TaskNote(rtf: Data(), plainText: "Своя заметка"))

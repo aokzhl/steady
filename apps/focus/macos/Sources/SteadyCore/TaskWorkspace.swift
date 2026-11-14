@@ -484,7 +484,11 @@ public final class TaskWorkspace {
     }
 
     public func pomodoroOverride(taskID: UUID) throws -> PomodoroParameters? { try database.pomodoroOverride(taskID: taskID) }
-    public func pomodoroParameters(taskID: UUID? = nil) throws -> PomodoroParameters { try database.pomodoroParameters(taskID: taskID) }
+    public func pomodoroParameters(taskID: UUID? = nil) throws -> PomodoroParameters {
+        // Read observable profile state so labels refresh after profile edits and selection.
+        let parameters = pomodoroProfiles.first { $0.id == selectedPomodoroProfileID }?.parameters ?? PomodoroParameters()
+        return try database.pomodoroParameters(taskID: taskID, profileParameters: parameters)
+    }
     public func setPomodoroParameters(taskID: UUID, parameters: PomodoroParameters?) throws {
         try parameters?.validate()
         try database.setPomodoroParameters(taskID: taskID, parameters: parameters)

@@ -1219,12 +1219,13 @@ extension SQLiteDatabase {
         }
     }
 
-    func pomodoroParameters(taskID: UUID?) throws -> PomodoroParameters {
+    func pomodoroParameters(taskID: UUID?, profileParameters: PomodoroParameters? = nil) throws -> PomodoroParameters {
         if let taskID {
             guard let task = try records().first(where: { $0.id == taskID }) else { throw WorkspaceError.occurrenceNotFound }
             if let own = try pomodoroOverride(taskID: taskID) { return own }
-            if let parent = task.parentTaskID { return try pomodoroParameters(taskID: parent) }
+            if let parent = task.parentTaskID { return try pomodoroParameters(taskID: parent, profileParameters: profileParameters) }
         }
+        if let profileParameters { return profileParameters }
         let selected = try selectedPomodoroProfileID()
         return try pomodoroProfiles().first { $0.id == selected }?.parameters ?? PomodoroParameters()
     }
