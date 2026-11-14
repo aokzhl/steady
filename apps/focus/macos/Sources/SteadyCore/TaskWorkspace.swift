@@ -58,12 +58,14 @@ public struct LabelRecord: Identifiable, Equatable, Sendable {
 
 public enum TaskRecurrence: Equatable, Sendable, Codable {
     case daily
+    case weekly
     case weekdays
     /// Calendar weekday numbers: Sunday = 1, Monday = 2, … Saturday = 7.
     case selectedWeekdays(Set<Int>)
 
     public var label: String {
         switch self {
+        case .weekly: "Раз в неделю в любой день"
         case .daily: "Ежедневно"
         case .weekdays: "По будням"
         case .selectedWeekdays: "Выбранные дни"
@@ -72,6 +74,7 @@ public enum TaskRecurrence: Equatable, Sendable, Codable {
 
     var weekdays: Set<Int> {
         switch self {
+        case .weekly: Set(1...7)
         case .daily: Set(1...7)
         case .weekdays: Set(2...6)
         case .selectedWeekdays(let days): days
@@ -97,6 +100,9 @@ public struct TaskRecord: Identifiable, Equatable, Sendable {
     public internal(set) var recurrence: TaskRecurrence? = nil
     public internal(set) var seriesStart: String? = nil
     public internal(set) var seriesDay: String? = nil
+    /// Inclusive Sunday boundary; seriesDay is the Monday identity, independent of plannedDay.
+    public internal(set) var periodEnd: String? = nil
+    public internal(set) var skippedAt: Date? = nil
 }
 
 public struct CreationDraft: Equatable, Sendable {
@@ -238,7 +244,7 @@ public final class TaskWorkspace {
         tasks = try database.insert(task, createdAt: createdAt, consuming: draft, today: context.day)
 
         dayContext = context
-        return tasks.first { $0.id == task.id && ($0.plannedDay ?? "") >= context.day } ?? tasks.first { $0.id == task.id } ?? task
+        return tasks.first { $0.id == task.id && ($0.periodEnd ?? $0.plannedDay ?? "") >= context.day } ?? tasks.first { $0.id == task.id } ?? task
     }
 
     public func setCompleted(occurrenceID: UUID, completed: Bool) throws {
@@ -247,6 +253,13 @@ public final class TaskWorkspace {
             tasks = try database.setCompleted(occurrenceID: occurrenceID, completed: completed, at: instant)
         }
         dayContext = DayContext(date: instant, calendar: calendar())
+    }
+
+    public func setSkipped(occurrenceID: UUID, skipped: Bool) throws {
+        let instant = now()
+        try persistSessionCommand(at: instant) {
+            tasks = try database.setSkipped(occurrenceID: occurrenceID, skipped: skipped, at: instant)
+        }
     }
 
     public func renameTask(id: UUID, title: String) throws {
@@ -278,7 +291,7 @@ public final class TaskWorkspace {
     }
 
     public func openTaskCount(in projectID: UUID?) -> Int {
-        visibleTasks.filter { $0.projectID == projectID }.filter { $0.completedAt == nil }.count
+        visibleTasks.filter { $0.projectID == projectID }.filter { $0.completedAt == nil && $0.skippedAt == nil }.count
     }
 
     public func setNote(id: UUID, note: TaskNote) throws {
@@ -345,7 +358,29 @@ public final class TaskWorkspace {
 
     public var openToday: [TaskRecord] {
         let day = today
-        return tasks.filter { task in task.completedAt == nil && task.plannedDay.map { task.seriesStart == nil ? $0 <= day : $0 == day } == true }
+        return tasks.filter { task in
+            guard task.completedAt == nil, task.skippedAt == nil else { return false }
+            if let end = task.periodEnd, let start = task.seriesDay {
+                return start <= day && day <= end && task.plannedDay.map { $0 <= day } != false
+            }
+            return task.plannedDay.map { task.seriesStart == nil ? $0 <= day : $0 == day } ?? false
+        }
+    }
+
+    public var currentWeekTasks: [TaskRecord] {
+        _ = dayContext
+        var current = Calendar(identifier: .gregorian)
+        current.timeZone = calendar().timeZone
+        let date = now()
+        let offset = (current.component(.weekday, from: date) + 5) % 7
+        let monday = current.date(byAdding: .day, value: -offset, to: date)!
+        let sunday = current.date(byAdding: .day, value: 6, to: monday)!
+        let start = DayContext(date: monday, calendar: current).day
+        let end = DayContext(date: sunday, calendar: current).day
+        return tasks.filter { task in
+            if let periodEnd = task.periodEnd, let periodStart = task.seriesDay { return periodStart <= end && start <= periodEnd }
+            return task.plannedDay.map { start <= $0 && $0 <= end } ?? false
+        }
     }
 
     public var completedToday: [TaskRecord] {
@@ -462,12 +497,20 @@ public final class TaskWorkspace {
     /// One current or nearest future occurrence per series; history stays available separately.
     public var visibleTasks: [TaskRecord] {
         let day = today
-        var seen: Set<UUID> = []
-        return tasks.filter { task in
-            guard task.seriesStart != nil else { return true }
-            guard let planned = task.plannedDay, planned >= day else { return false }
-            return seen.insert(task.id).inserted
+        var indices: [UUID: Int] = [:]
+        var visible: [TaskRecord] = []
+        for task in tasks {
+            guard task.seriesStart != nil else { visible.append(task); continue }
+            guard let boundary = task.periodEnd ?? task.plannedDay, boundary >= day else { continue }
+            if let index = indices[task.id] {
+                // A preserved daily fact may share the Monday of a new weekly period.
+                if visible[index].periodEnd == nil, task.periodEnd != nil { visible[index] = task }
+            } else {
+                indices[task.id] = visible.count
+                visible.append(task)
+            }
         }
+        return visible
     }
 
     public func occurrences(from firstDay: String, through lastDay: String) throws -> [TaskRecord] {
@@ -475,7 +518,10 @@ public final class TaskWorkspace {
         try validateDay(lastDay)
         guard firstDay <= lastDay else { throw WorkspaceError.invalidDay }
         tasks = try database.refreshOccurrences(today: today, timeZone: calendar().timeZone.identifier, through: lastDay)
-        return tasks.filter { $0.plannedDay.map { firstDay <= $0 && $0 <= lastDay } ?? false }
+        return tasks.filter { task in
+            if let end = task.periodEnd, let start = task.seriesDay { return start <= lastDay && firstDay <= end }
+            return task.plannedDay.map { firstDay <= $0 && $0 <= lastDay } ?? false
+        }
     }
 
     public func setRecurrence(occurrenceID: UUID, recurrence: TaskRecurrence) throws {

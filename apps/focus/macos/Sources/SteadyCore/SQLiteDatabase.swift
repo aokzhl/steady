@@ -2,12 +2,15 @@ import CSQLite
 import Foundation
 
 public enum WorkspaceError: Error, Equatable, LocalizedError {
+    case activeOwnerRequiresStop
+    case outsideOccurrenceWeek
     case invalidRecurrence
     case timerDurationRequired
     case invalidTimerDuration
     case invalidTimerIncrement
     case invalidDay
     case sessionOccupied
+    case skippedOwner
     case completedOwner
     case emptyTitle
     case invalidTitle
@@ -22,6 +25,10 @@ public enum WorkspaceError: Error, Equatable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
+        case .activeOwnerRequiresStop:
+            "Сначала нажмите Stop, затем пропустите выполнение. Сессия на паузе тоже занимает активный инструмент."
+        case .outsideOccurrenceWeek:
+            "Недельное выполнение можно назначить только на день своей недели, с понедельника по воскресенье."
         case .invalidRecurrence:
             "Выберите хотя бы один день недели."
         case .timerDurationRequired: "Задайте длительность таймера перед запуском."
@@ -31,6 +38,8 @@ public enum WorkspaceError: Error, Equatable, LocalizedError {
             "Выберите существующую календарную дату."
         case .sessionOccupied:
             "Уже есть активная сессия, в том числе на паузе. Остановите её перед новым запуском."
+        case .skippedOwner:
+            "Выполнение пропущено. Сначала верните его в работу."
         case .completedOwner:
             "Задача уже выполнена. Сначала верните её в работу."
         case .emptyTitle:
@@ -80,7 +89,7 @@ final class SQLiteDatabase {
                 guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
                 return Int(sqlite3_column_int(query, 0))
             }
-            guard version <= 9 else { throw WorkspaceError.unsupportedSchema(version) }
+            guard version <= 10 else { throw WorkspaceError.unsupportedSchema(version) }
             if version == 0 { try migrateToVersionOne() }
             if version < 2 { try migrateToVersionTwo() }
             if version < 3 { try migrateToVersionThree() }
@@ -90,6 +99,7 @@ final class SQLiteDatabase {
             if version < 7 { try migrateToVersionSeven() }
             if version < 8 { try migrateToVersionEight() }
             if version < 9 { try migrateToVersionNine() }
+            if version < 10 { try migrateToVersionTen() }
         } catch {
             sqlite3_close(connection)
             connection = nil
@@ -98,6 +108,16 @@ final class SQLiteDatabase {
     }
 
     deinit { sqlite3_close(connection) }
+
+    private func migrateToVersionTen() throws {
+        try transaction {
+            try execute("ALTER TABLE task_occurrences ADD COLUMN period_end TEXT")
+            try execute("ALTER TABLE task_occurrences ADD COLUMN skipped_at REAL")
+            try execute("DROP INDEX occurrence_series_day")
+            try execute("CREATE UNIQUE INDEX occurrence_series_day ON task_occurrences(task_id, series_day, COALESCE(period_end, ''))")
+            try execute("PRAGMA user_version = 10")
+        }
+    }
 
     private func migrateToVersionEight() throws {
         try transaction {
@@ -163,11 +183,15 @@ final class SQLiteDatabase {
         return formatter
     }
 
+    private func weekStart(_ date: Date, calendar: Calendar) -> Date {
+        calendar.date(byAdding: .day, value: -((calendar.component(.weekday, from: date) + 5) % 7), to: date)!
+    }
+
     /// Calendar dates are enumerated in UTC; local DST cannot skip or repeat a date.
     private func materialize(today: String, timeZone: String, through requested: String?) throws {
         // A prefetched future occurrence adopts the current zone when that period arrives.
         // Historical periods and occurrences with facts keep their original zone.
-        try execute("UPDATE task_occurrences SET time_zone = ? WHERE calendar_frozen = 0 AND series_day >= ? AND completed_at IS NULL AND NOT EXISTS (SELECT 1 FROM time_tool_runs r WHERE r.occurrence_id = task_occurrences.id)", [.text(timeZone), .text(today)])
+        try execute("UPDATE task_occurrences SET time_zone = ? WHERE calendar_frozen = 0 AND COALESCE(period_end, series_day) >= ? AND completed_at IS NULL AND NOT EXISTS (SELECT 1 FROM time_tool_runs r WHERE r.occurrence_id = task_occurrences.id)", [.text(timeZone), .text(today)])
         try execute("UPDATE task_occurrences SET calendar_frozen = 1 WHERE series_day <= ?", [.text(today)])
         let ids = try statement("SELECT DISTINCT task_id FROM recurrence_rules") { query in
             var ids: [UUID] = []
@@ -192,11 +216,18 @@ final class SQLiteDatabase {
             while date <= end {
                 let day = formatter.string(from: date)
                 let rule = rules.last { $0.day <= day }?.recurrence
-                if let rule, rule.weekdays.contains(calendar.component(.weekday, from: date)) {
-                    if day <= boundary || !foundNext {
-                        try execute("INSERT OR IGNORE INTO task_occurrences (id, task_id, planned_day, time_zone, series_day, calendar_frozen) VALUES (?, ?, ?, ?, ?, ?)", [.text(UUID().uuidString), .text(id.uuidString), .text(day), .text(timeZone), .text(day), .number(day <= today ? 1 : 0)])
+                if let rule {
+                    let weekly = rule == .weekly
+                    let monday = weekStart(date, calendar: calendar)
+                    let period = weekly ? formatter.string(from: monday) : day
+                    let periodEnd = weekly ? formatter.string(from: calendar.date(byAdding: .day, value: 6, to: monday)!) : nil
+                    let matches = weekly ? (day == start || date == monday || rules.contains { $0.day == day }) : rule.weekdays.contains(calendar.component(.weekday, from: date))
+                    if matches {
+                        if period <= boundary || !foundNext {
+                            try execute("INSERT OR IGNORE INTO task_occurrences (id, task_id, planned_day, time_zone, series_day, calendar_frozen, period_end) VALUES (?, ?, ?, ?, ?, ?, ?)", [.text(UUID().uuidString), .text(id.uuidString), weekly ? .null : .text(day), .text(timeZone), .text(period), .number(period <= today ? 1 : 0), periodEnd.map { .text($0) } ?? .null])
+                        }
+                        if period > boundary { foundNext = true }
                     }
-                    if day > boundary { foundNext = true }
                 }
                 date = calendar.date(byAdding: .day, value: 1, to: date)!
             }
@@ -206,7 +237,7 @@ final class SQLiteDatabase {
     func setRecurrence(occurrenceID: UUID, recurrence: TaskRecurrence, today: String, timeZone: String) throws -> [TaskRecord] {
         try transaction {
             guard let selected = try records().first(where: { $0.occurrenceID == occurrenceID }) else { throw WorkspaceError.occurrenceNotFound }
-            let effective = selected.seriesDay ?? selected.plannedDay ?? today
+            let effective = max(selected.seriesDay ?? selected.plannedDay ?? today, selected.seriesStart ?? "")
             try execute("DELETE FROM recurrence_rules WHERE task_id = ? AND effective_day >= ?", [.text(selected.id.uuidString), .text(effective)])
             try insertRule(taskID: selected.id, day: effective, recurrence: recurrence)
             // Keep matching UUIDs, completed facts, and explicit individual moves.
@@ -215,7 +246,7 @@ final class SQLiteDatabase {
             let calendar = formatter.calendar!
             for record in candidates {
                 let day = record.seriesDay ?? record.plannedDay ?? effective
-                let matches = recurrence.weekdays.contains(calendar.component(.weekday, from: formatter.date(from: day)!))
+                let matches = recurrence == .weekly ? record.periodEnd != nil : (record.periodEnd == nil && recurrence.weekdays.contains(calendar.component(.weekday, from: formatter.date(from: day)!)))
                 if !matches {
                     try execute("DELETE FROM task_occurrences WHERE id = ? AND completed_at IS NULL AND individual_override = 0 AND NOT EXISTS (SELECT 1 FROM time_tool_runs r WHERE r.occurrence_id = task_occurrences.id)", [.text(record.occurrenceID.uuidString)])
                 } else if record.seriesDay == nil {
@@ -241,9 +272,13 @@ final class SQLiteDatabase {
 
     func setPlannedDay(occurrenceID: UUID, day: String?, timeZone: String, today: String) throws -> [TaskRecord] {
         try transaction {
+            guard let record = try records().first(where: { $0.occurrenceID == occurrenceID }) else { throw WorkspaceError.occurrenceNotFound }
+            if let day, let end = record.periodEnd, let start = record.seriesDay, !(start...end).contains(day) {
+                throw WorkspaceError.outsideOccurrenceWeek
+            }
             let historicalZone: String? = try statement("""
                 SELECT time_zone, calendar_frozen != 0 OR completed_at IS NOT NULL
-                    OR planned_day < ? OR series_day < ?
+                    OR planned_day < ? OR COALESCE(period_end, series_day) < ?
                     OR EXISTS (SELECT 1 FROM time_tool_runs r WHERE r.occurrence_id = task_occurrences.id)
                 FROM task_occurrences WHERE id = ?
                 """, [.text(today), .text(today), .text(occurrenceID.uuidString)]) { query in
@@ -418,7 +453,7 @@ final class SQLiteDatabase {
 
     func records() throws -> [TaskRecord] {
         try statement("""
-            SELECT t.id, o.id, t.title, o.planned_day, o.time_zone, o.completed_at, t.priority, t.project_id, t.note_rtf, t.note_text, o.series_day
+            SELECT t.id, o.id, t.title, o.planned_day, o.time_zone, o.completed_at, t.priority, t.project_id, t.note_rtf, t.note_text, o.series_day, o.period_end, o.skipped_at
             FROM tasks t JOIN task_occurrences o ON o.task_id = t.id
             ORDER BY t.created_at, t.rowid, o.planned_day, o.rowid
             """) { query in
@@ -441,7 +476,9 @@ final class SQLiteDatabase {
                 let rules = try recurrenceRules(taskID: id)
                 record.seriesStart = rules.first?.day
                 record.seriesDay = sqlite3_column_type(query, 10) == SQLITE_NULL ? nil : text(query, 10)
-                let day = record.seriesDay ?? record.plannedDay ?? "9999-12-31"
+                record.skippedAt = sqlite3_column_type(query, 12) == SQLITE_NULL ? nil : Date(timeIntervalSince1970: sqlite3_column_double(query, 12))
+                record.periodEnd = sqlite3_column_type(query, 11) == SQLITE_NULL ? nil : text(query, 11)
+                let day = record.periodEnd ?? max(record.seriesDay ?? record.plannedDay ?? "9999-12-31", rules.first?.day ?? "")
                 record.recurrence = rules.last { $0.day <= day }?.recurrence
                 records.append(record)
                 result = sqlite3_step(query)
@@ -491,7 +528,20 @@ final class SQLiteDatabase {
                 try saveTimeToolSession(session)
             }
             let value: Value = completed ? .number(instant.timeIntervalSince1970) : .null
-            try execute("UPDATE task_occurrences SET completed_at = ? WHERE id = ?", [value, .text(occurrenceID.uuidString)])
+            try execute("UPDATE task_occurrences SET completed_at = ?, skipped_at = NULL WHERE id = ?", [value, .text(occurrenceID.uuidString)])
+            return try records()
+        }
+    }
+
+    func setSkipped(occurrenceID: UUID, skipped: Bool, at instant: Date) throws -> [TaskRecord] {
+        try transaction {
+            guard let task = try records().first(where: { $0.occurrenceID == occurrenceID }) else { throw WorkspaceError.occurrenceNotFound }
+            guard task.periodEnd != nil else { throw WorkspaceError.invalidRecurrence }
+            guard (task.skippedAt != nil) != skipped else { return try records() }
+            if skipped, try activeTimeToolSession()?.occurrenceID == occurrenceID {
+                throw WorkspaceError.activeOwnerRequiresStop
+            }
+            try execute("UPDATE task_occurrences SET skipped_at = ?, completed_at = NULL, individual_override = 1 WHERE id = ?", [skipped ? .number(instant.timeIntervalSince1970) : .null, .text(occurrenceID.uuidString)])
             return try records()
         }
     }
@@ -650,6 +700,7 @@ final class SQLiteDatabase {
                     throw WorkspaceError.occurrenceNotFound
                 }
                 guard task.completedAt == nil else { throw WorkspaceError.completedOwner }
+                guard task.skippedAt == nil else { throw WorkspaceError.skippedOwner }
                 owner = task
             }
             var duration = durationSeconds

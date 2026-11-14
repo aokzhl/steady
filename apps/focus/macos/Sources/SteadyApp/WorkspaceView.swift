@@ -212,9 +212,10 @@ struct WorkspaceView: View {
                 Text("Все").tag(TaskPeriod.all)
                 Text("Сегодня").tag(TaskPeriod.today)
                 Text("Завтра").tag(TaskPeriod.tomorrow)
+                Text("Неделя").tag(TaskPeriod.week)
                 Text("История").tag(TaskPeriod.history)
             }
-            .pickerStyle(.segmented).frame(maxWidth: 390)
+            .pickerStyle(.segmented).frame(maxWidth: 450)
 
 
             if let openingError = editor.openingError {
@@ -246,20 +247,14 @@ struct WorkspaceView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
                         let source = editor.period == .all ? workspace.visibleTasks : workspace.tasks
-                        let open = source.filter {
-                            $0.completedAt == nil && editor.matchesContext($0)
-                            && (editor.period != .history || $0.plannedDay.map { $0 < workspace.today } == true)
-                            && (editor.contextDay == nil || $0.plannedDay == editor.contextDay || (editor.period == .today && $0.seriesStart == nil && $0.plannedDay.map { $0 < workspace.today } == true))
-                        }
-                        let completed = source.filter {
-                            $0.completedAt != nil && editor.matchesContext($0)
-                            && (editor.period != .history || $0.plannedDay.map { $0 < workspace.today } == true)
-                            && (editor.contextDay == nil || (editor.period == .today ? workspace.completedToday.contains($0) : $0.plannedDay == editor.contextDay))
-                        }
-                        if open.isEmpty, completed.isEmpty {
+                        let matching = source.filter { editor.matchesContext($0) && editor.matchesPeriod($0) }
+                        let open = matching.filter { $0.completedAt == nil && $0.skippedAt == nil }
+                        let completed = matching.filter { $0.completedAt != nil }
+                        let skipped = matching.filter { $0.skippedAt != nil }
+                        if open.isEmpty, completed.isEmpty, skipped.isEmpty {
                             emptyState
                         } else {
-                            let overdue = editor.period == .today ? open.filter { $0.plannedDay.map { $0 < workspace.today } == true } : []
+                            let overdue = editor.period == .today ? open.filter { $0.seriesStart == nil && $0.plannedDay.map { $0 < workspace.today } == true } : []
                             if !overdue.isEmpty {
                                 sectionLabel("Ранее запланировано", count: overdue.count)
                                 ForEach(overdue, id: \.occurrenceID) { taskRow($0) }
@@ -278,6 +273,10 @@ struct WorkspaceView: View {
                                     sectionLabel("Без проекта", count: unassigned.count)
                                     ForEach(unassigned, id: \.occurrenceID) { taskRow($0) }
                                 }
+                            }
+                            if !skipped.isEmpty {
+                                sectionLabel("Пропущено", count: skipped.count).padding(.top, 16)
+                                ForEach(skipped, id: \.occurrenceID) { taskRow($0) }
                             }
                             if !completed.isEmpty {
                                 sectionLabel(editor.period == .today ? "Выполнено сегодня" : "Выполнено", count: completed.count)
@@ -322,7 +321,7 @@ struct WorkspaceView: View {
     private func taskRow(_ task: TaskRecord) -> some View {
         HStack(spacing: 14) {
             Button { editor.setCompleted(task) } label: {
-                Image(systemName: task.completedAt == nil ? "circle" : "checkmark.circle.fill")
+                Image(systemName: task.skippedAt != nil ? "forward.end.circle" : (task.completedAt == nil ? "circle" : "checkmark.circle.fill"))
                     .font(.system(size: 21, weight: .light))
                     .foregroundStyle(task.completedAt == nil ? Color.secondary : Palette.accent)
             }
@@ -351,7 +350,7 @@ struct WorkspaceView: View {
             .buttonStyle(.plain).help(task.title)
             .accessibilityIdentifier("select-\(task.id)")
 
-            Text(dayLabel(task.plannedDay, today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow))
+            Text(occurrenceDayLabel(task, today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow))
                 .font(.system(size: 11)).foregroundStyle(.secondary)
         }
         .padding(16)
@@ -491,8 +490,24 @@ private struct DetailPanel: View {
             if task.seriesStart != nil {
                 Text("Начало серии: \(task.seriesStart ?? ""). Изменение повтора сохраняет выполненные экземпляры, работу и индивидуальные переносы.")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
-                Label(dayLabel(task.plannedDay, today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow), systemImage: "calendar")
-                    .font(.system(size: 12))
+                if let end = task.periodEnd, let start = task.seriesDay {
+                    Text("Неделя: \(start) — \(end)").font(.system(size: 11)).foregroundStyle(.secondary)
+                    ScheduleField(day: Binding(get: { editor.detailDay }, set: { editor.changeDay($0) }),
+                                  today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow,
+                                  allowedDays: start...end)
+                    Text("День необязателен; выбрать можно только в пределах этой недели.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    Button(task.skippedAt == nil ? "Пропустить выполнение" : "Вернуть в работу") { editor.toggleSkipped(task) }
+                        .buttonStyle(.bordered)
+                        .disabled(task.skippedAt == nil && editor.workspace?.activeSession?.occurrenceID == task.occurrenceID)
+                    if editor.workspace?.activeSession?.occurrenceID == task.occurrenceID {
+                        Text("Сначала нажмите Stop, затем пропустите выполнение.")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Label(dayLabel(task.plannedDay, today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow), systemImage: "calendar")
+                        .font(.system(size: 12))
+                }
             } else {
             ScheduleField(day: Binding(get: { editor.detailDay }, set: { editor.changeDay($0) }),
                           today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow)
@@ -520,7 +535,7 @@ private struct DetailPanel: View {
                 Button("Повторить сохранение") { editor.saveDetails() }
                 Button("Отменить правки", action: editor.discardDetailEdits)
             }
-            Label(task.completedAt == nil ? "Не выполнено" : "Выполнено", systemImage: task.completedAt == nil ? "circle" : "checkmark.circle")
+            Label(occurrenceStatus(task, today: editor.workspace?.today), systemImage: task.skippedAt != nil ? "forward.end.circle" : (task.completedAt == nil ? "circle" : "checkmark.circle"))
                 .font(.system(size: 12)).foregroundStyle(.secondary)
             RunHistory(results: editor.workspace?.timeToolResults.filter { $0.occurrenceID == task.occurrenceID } ?? [])
             Spacer(minLength: 0)
@@ -551,6 +566,18 @@ private func dayLabel(_ day: String?, today: String?, tomorrow: String?) -> Stri
     return day
 }
 
+private func occurrenceDayLabel(_ task: TaskRecord, today: String?, tomorrow: String?) -> String {
+    if task.periodEnd != nil, task.plannedDay == nil { return "Любой день недели" }
+    return dayLabel(task.plannedDay, today: today, tomorrow: tomorrow)
+}
+
+private func occurrenceStatus(_ task: TaskRecord, today: String?) -> String {
+    if task.skippedAt != nil { return "Пропущено" }
+    if task.completedAt != nil { return "Выполнено" }
+    if let end = task.periodEnd, let today, end < today { return "Не выполнено за неделю" }
+    return "Не выполнено"
+}
+
 private struct RecurrenceField: View {
     @Binding var selection: TaskRecurrence?
     var allowsNoRepeat = true
@@ -559,12 +586,13 @@ private struct RecurrenceField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Picker("Повтор", selection: Binding(get: {
-                switch selection { case nil: 0; case .daily: 1; case .weekdays: 2; case .selectedWeekdays: 3 }
+                switch selection { case nil: 0; case .daily: 1; case .weekdays: 2; case .selectedWeekdays: 3; case .weekly: 4 }
             }, set: { value in
                 switch value {
                 case 1: selection = .daily
                 case 2: selection = .weekdays
                 case 3: selection = .selectedWeekdays([2])
+                case 4: selection = .weekly
                 default: selection = nil
                 }
             })) {
@@ -572,6 +600,7 @@ private struct RecurrenceField: View {
                 Text("Ежедневно").tag(1)
                 Text("Будни").tag(2)
                 Text("Выбранные дни").tag(3)
+                Text("Раз в неделю в любой день").tag(4)
             }
             .accessibilityIdentifier("task-recurrence")
             if case .selectedWeekdays(let selected) = selection {
@@ -600,6 +629,7 @@ private struct ScheduleField: View {
     let tomorrow: String?
     var title = "Расписание"
     var allowsUndated = true
+    var allowedDays: ClosedRange<String>? = nil
     @State private var choosingDate = false
 
     private var formatter: DateFormatter {
@@ -610,15 +640,25 @@ private struct ScheduleField: View {
         return formatter
     }
 
+    private func allows(_ day: String?) -> Bool {
+        guard let allowedDays else { return true }
+        return day.map(allowedDays.contains) ?? false
+    }
+
+    private var dateRange: ClosedRange<Date> {
+        guard let allowedDays, let first = formatter.date(from: allowedDays.lowerBound), let last = formatter.date(from: allowedDays.upperBound) else { return .distantPast ... .distantFuture }
+        return first...last
+    }
+
     var body: some View {
         HStack {
             Label(title, systemImage: "calendar").foregroundStyle(.secondary)
             Spacer()
             Menu(dayLabel(day, today: today, tomorrow: tomorrow)) {
-                Button("Сегодня") { day = today }
-                Button("Завтра") { day = tomorrow }
+                Button("Сегодня") { day = today }.disabled(!allows(today))
+                Button("Завтра") { day = tomorrow }.disabled(!allows(tomorrow))
                 Button("Выбрать день…") {
-                    if day == nil { day = today }
+                    if day == nil { day = allowedDays?.lowerBound ?? today }
                     choosingDate = true
                 }
                 Divider()
@@ -630,7 +670,7 @@ private struct ScheduleField: View {
                     DatePicker("День", selection: Binding(
                         get: { day.flatMap { formatter.date(from: $0) } ?? Date() },
                         set: { day = formatter.string(from: $0) }
-                    ), displayedComponents: .date)
+                    ), in: dateRange, displayedComponents: .date)
                     .datePickerStyle(.graphical)
                     Button("Готово") { choosingDate = false }
                 }
@@ -670,17 +710,17 @@ private struct ToolMenu: View {
     var body: some View {
         Menu {
             Button(timerTitle) { editor.requestTimer(task) }
-                .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil)
+                .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil || task?.skippedAt != nil)
             Button("Помодоро · Не задано") {}.disabled(true)
             Button("Секундомер · Счёт вверх") { editor.startStopwatch(task) }
-                .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil)
+                .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil || task?.skippedAt != nil)
             if editor.workspace?.activeSession != nil {
                 Divider()
                 Text("Сначала остановите текущую сессию (в том числе на паузе)")
                 if editor.activeSessionOwner != nil {
                     Button("К текущей задаче", action: editor.showActiveSessionOwner)
                 }
-            } else if task?.completedAt != nil {
+            } else if task?.completedAt != nil || task?.skippedAt != nil {
                 Text("Верните задачу в невыполненные для нового запуска")
             }
         } label: {
