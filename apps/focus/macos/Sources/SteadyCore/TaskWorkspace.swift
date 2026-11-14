@@ -168,6 +168,7 @@ public final class TaskWorkspace {
     private let now: () -> Date
     private let calendar: () -> Calendar
     private var dayContext: DayContext
+    private var preparedThrough: String?
 
     public init(databaseURL: URL, now: @escaping () -> Date = Date.init, calendar: @escaping () -> Calendar = { .current }) throws {
         self.now = now
@@ -197,6 +198,7 @@ public final class TaskWorkspace {
         let date = now()
         let bounds = periodBounds(for: context.period, at: context.namedMonth.flatMap { calendarDate($0) } ?? date, calendar: current)
         tasks = try database.refreshOccurrences(today: today, timeZone: current.timeZone.identifier, through: bounds.end)
+        preparedThrough = bounds.end
     }
 
     @discardableResult
@@ -272,7 +274,7 @@ public final class TaskWorkspace {
         task.recurrence = recurrence
         task.seriesStart = recurrence == nil ? nil : (seriesStart ?? context.day)
         for child in draft?.children ?? [] { _ = try validatedTitle(child.title) }
-        tasks = try database.insert(task, createdAt: createdAt, consuming: draft, today: context.day)
+        tasks = try database.insert(task, createdAt: createdAt, consuming: draft, today: context.day, through: preparedThrough)
 
         dayContext = context
         return tasks.first { $0.id == task.id && ($0.periodEnd ?? $0.plannedDay ?? "") >= context.day } ?? tasks.first { $0.id == task.id } ?? task
@@ -601,7 +603,7 @@ public final class TaskWorkspace {
 
     public func setRecurrence(occurrenceID: UUID, recurrence: TaskRecurrence) throws {
         try recurrence.validate()
-        tasks = try database.setRecurrence(occurrenceID: occurrenceID, recurrence: recurrence, today: today, timeZone: calendar().timeZone.identifier)
+        tasks = try database.setRecurrence(occurrenceID: occurrenceID, recurrence: recurrence, today: today, timeZone: calendar().timeZone.identifier, through: preparedThrough)
     }
 
     public static func guestDatabaseURL(in baseDirectory: URL? = nil) throws -> URL {
@@ -758,20 +760,24 @@ extension TaskWorkspace {
         return String(DayContext(date: next, calendar: current).day.prefix(7)) + "-01"
     }
 
-    public func prepareCalendar(month: String) throws {
-        guard let date = calendarDate(month) else { return }
+    private func monthContext(_ month: String) -> (calendar: Calendar, interval: DateInterval)? {
+        guard let date = calendarDate(month) else { return nil }
         var value = Calendar(identifier: .gregorian)
         value.timeZone = calendar().timeZone
-        let interval = value.dateInterval(of: .month, for: date)!
+        guard let interval = value.dateInterval(of: .month, for: date) else { return nil }
+        return (value, interval)
+    }
+
+    public func prepareCalendar(month: String) throws {
+        guard let (value, interval) = monthContext(month) else { return }
         let last = value.date(byAdding: .day, value: -1, to: interval.end)!
-        _ = try occurrences(from: DayContext(date: interval.start, calendar: value).day, through: DayContext(date: last, calendar: value).day)
+        let end = DayContext(date: last, calendar: value).day
+        _ = try occurrences(from: DayContext(date: interval.start, calendar: value).day, through: end)
+        preparedThrough = end
     }
 
     public func taskCalendar(month: String, in context: TaskListContext) -> TaskCalendarResult {
-        var value = Calendar(identifier: .gregorian)
-        value.timeZone = calendar().timeZone
-        let date = calendarDate(month) ?? calendarDate(currentMonth)!
-        let interval = value.dateInterval(of: .month, for: date)!
+        let (value, interval) = monthContext(month) ?? monthContext(currentMonth)!
         let start = DayContext(date: interval.start, calendar: value).day
         let end = DayContext(date: value.date(byAdding: .day, value: -1, to: interval.end)!, calendar: value).day
         // Use the list's exact period/context predicates, while undated items remain reachable separately.
@@ -787,7 +793,7 @@ extension TaskWorkspace {
             guard task.plannedDay == nil, let first = task.seriesDay, let last = task.periodEnd else { return false }
             return first <= end && start <= last && matchingIDs.contains(task.occurrenceID)
         }
-        let days = (0..<value.range(of: .day, in: .month, for: date)!.count).map { offset in
+        let days = (0..<value.range(of: .day, in: .month, for: interval.start)!.count).map { offset in
             let key = DayContext(date: value.date(byAdding: .day, value: offset, to: interval.start)!, calendar: value).day
             let inPeriod: Bool
             switch context.period {

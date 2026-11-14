@@ -106,4 +106,31 @@ struct CalendarTests {
         #expect(reopened.creationDraft == draft)
         #expect(reopened.timeToolResults == facts)
     }
+
+    @Test func creatingAndChangingSeriesKeepThePreparedMonthCompleteWithoutRenavigation() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let instant = ISO8601DateFormatter().date(from: "2026-11-14T10:00:00Z")!
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let workspace = try TaskWorkspace(databaseURL: directory.appendingPathComponent("steady.sqlite"), now: { instant }, calendar: { calendar })
+        try workspace.prepareCalendar(month: "2026-11-01")
+        try workspace.saveCreationDraft(CreationDraft(title: "New daily", recurrence: .daily, seriesStart: "2026-11-14"))
+        let task = try workspace.createTaskFromDraft()
+        let firstMonth = workspace.taskCalendar(month: "2026-11-01", in: TaskListContext(period: .all))
+        #expect(firstMonth.days.flatMap(\.tasks).count == 17)
+        #expect(firstMonth.days.last?.tasks.first?.plannedDay == "2026-11-30")
+        #expect(workspace.creationDraft == nil)
+        #expect(throws: WorkspaceError.emptyTitle) { try workspace.createTaskFromDraft() }
+        try workspace.setRecurrence(occurrenceID: task.occurrenceID, recurrence: .weekdays)
+        #expect(workspace.taskCalendar(month: "2026-11-01", in: TaskListContext(period: .all)).days.flatMap(\.tasks).count == 11)
+        let weekday = try #require(workspace.tasks.first { $0.id == task.id })
+        try workspace.setRecurrence(occurrenceID: weekday.occurrenceID, recurrence: .daily)
+        #expect(workspace.taskCalendar(month: "2026-11-01", in: TaskListContext(period: .all)).days.flatMap(\.tasks).count == 15)
+        var december = TaskListContext(period: .month)
+        december.namedMonth = "2026-12-01"
+        try workspace.prepareTaskList(in: december)
+        let second = try workspace.createTask(title: "December daily", recurrence: .daily, seriesStart: "2026-12-01")
+        #expect(workspace.taskList(in: december).matches.filter { $0.id == second.id }.count == 31)
+    }
 }
