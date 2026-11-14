@@ -294,7 +294,7 @@ private struct CreationPanel: View {
             TaskProperties(day: "Сегодня")
             ProjectField(projects: editor.workspace?.projects ?? [], selection: Binding(
                 get: { editor.draftProjectID },
-                set: { editor.draftProjectID = $0; editor.saveDraft() }
+                set: { editor.draftProjectID = $0; editor.draftProjectWasChosen = true; editor.saveDraft() }
             ))
             PriorityField(selection: Binding(
                 get: { editor.draftPriority },

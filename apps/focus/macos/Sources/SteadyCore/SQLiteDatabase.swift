@@ -78,6 +78,7 @@ final class SQLiteDatabase {
                 """)
             try execute("ALTER TABLE tasks ADD COLUMN project_id TEXT REFERENCES projects(id)")
             try execute("ALTER TABLE creation_draft ADD COLUMN project_id TEXT REFERENCES projects(id)")
+            try execute("ALTER TABLE creation_draft ADD COLUMN project_was_chosen INTEGER NOT NULL DEFAULT 0 CHECK(project_was_chosen IN (0, 1))")
             try execute("PRAGMA user_version = 3")
         }
     }
@@ -224,26 +225,26 @@ final class SQLiteDatabase {
     }
 
     func creationDraft() throws -> CreationDraft? {
-        try statement("SELECT title, priority, project_id FROM creation_draft WHERE id = 1") { query in
+        try statement("SELECT title, priority, project_id, project_was_chosen FROM creation_draft WHERE id = 1") { query in
             let result = sqlite3_step(query)
             if result == SQLITE_DONE { return nil }
             guard result == SQLITE_ROW, let priority = TaskPriority(rawValue: text(query, 1)) else {
                 throw failure()
             }
-            return CreationDraft(title: text(query, 0), priority: priority, projectID: UUID(uuidString: text(query, 2)))
+            return CreationDraft(title: text(query, 0), priority: priority, projectID: UUID(uuidString: text(query, 2)), projectWasChosen: sqlite3_column_int(query, 3) != 0)
         }
     }
 
     func saveCreationDraft(_ draft: CreationDraft) throws {
         try transaction {
             try validateProject(draft.projectID)
-            if draft.title.isEmpty && draft.priority == .none && draft.projectID == nil {
+            if draft.isEmpty {
                 try execute("DELETE FROM creation_draft")
             } else {
                 try execute("""
-                    INSERT INTO creation_draft (id, title, priority, project_id) VALUES (1, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET title = excluded.title, priority = excluded.priority, project_id = excluded.project_id
-                    """, [.text(draft.title), .text(draft.priority.rawValue), draft.projectID.map { .text($0.uuidString) } ?? .null])
+                    INSERT INTO creation_draft (id, title, priority, project_id, project_was_chosen) VALUES (1, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET title = excluded.title, priority = excluded.priority, project_id = excluded.project_id, project_was_chosen = excluded.project_was_chosen
+                    """, [.text(draft.title), .text(draft.priority.rawValue), draft.projectID.map { .text($0.uuidString) } ?? .null, .number(draft.projectWasChosen ? 1 : 0)])
             }
         }
     }

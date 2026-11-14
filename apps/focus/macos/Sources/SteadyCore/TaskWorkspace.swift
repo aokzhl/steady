@@ -50,13 +50,18 @@ public struct TaskRecord: Identifiable, Equatable, Sendable {
 public struct CreationDraft: Equatable, Sendable {
     public let title: String
     public let priority: TaskPriority
-
     public let projectID: UUID?
+    public let projectWasChosen: Bool
 
-    public init(title: String = "", priority: TaskPriority = .none, projectID: UUID? = nil) {
+    public init(title: String = "", priority: TaskPriority = .none, projectID: UUID? = nil, projectWasChosen: Bool = false) {
         self.title = title
         self.priority = priority
         self.projectID = projectID
+        self.projectWasChosen = projectWasChosen
+    }
+
+    public var isEmpty: Bool {
+        title.isEmpty && priority == .none && projectID == nil && !projectWasChosen
     }
 }
 
@@ -155,7 +160,7 @@ public final class TaskWorkspace {
 
     public func saveCreationDraft(_ draft: CreationDraft) throws {
         try database.saveCreationDraft(draft)
-        creationDraft = draft.title.isEmpty && draft.priority == .none && draft.projectID == nil ? nil : draft
+        creationDraft = draft.isEmpty ? nil : draft
     }
 
     public func discardCreationDraft() throws {

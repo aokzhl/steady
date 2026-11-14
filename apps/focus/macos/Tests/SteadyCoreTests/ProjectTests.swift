@@ -133,4 +133,25 @@ struct ProjectTests {
         #expect(reopened.tasks.first?.projectID == project.id)
     }
 
+    @Test
+    func explicitlyChoosingNoProjectOnAnEmptyDraftSurvivesReopening() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        let workspace = try TaskWorkspace(databaseURL: url)
+        try workspace.saveCreationDraft(CreationDraft())
+        #expect(try TaskWorkspace(databaseURL: url).creationDraft == nil)
+        try workspace.saveCreationDraft(CreationDraft(projectWasChosen: true))
+        let reopened = try TaskWorkspace(databaseURL: url)
+        let draft = try #require(reopened.creationDraft)
+        #expect(draft.projectID == nil)
+        #expect(draft.projectWasChosen)
+        #expect(reopened.tasks.isEmpty)
+        try reopened.saveCreationDraft(CreationDraft(title: "Без проекта", projectID: draft.projectID, projectWasChosen: draft.projectWasChosen))
+        #expect(try reopened.createTaskFromDraft().projectID == nil)
+        try reopened.saveCreationDraft(CreationDraft(projectWasChosen: true))
+        try reopened.discardCreationDraft()
+        #expect(try TaskWorkspace(databaseURL: url).creationDraft == nil)
+    }
+
 }

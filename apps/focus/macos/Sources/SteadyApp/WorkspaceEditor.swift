@@ -16,6 +16,7 @@ final class WorkspaceEditor {
     private var projectError: String?
     var selectedProjectID: UUID?
     var draftProjectID: UUID?
+    var draftProjectWasChosen = false
     var detailProjectID: UUID?
 
     var detailError: String? {
@@ -34,7 +35,7 @@ final class WorkspaceEditor {
         workspace?.tasks.first { $0.occurrenceID == selectedID }
     }
 
-    private var draft: CreationDraft { CreationDraft(title: draftTitle, priority: draftPriority, projectID: draftProjectID) }
+    private var draft: CreationDraft { CreationDraft(title: draftTitle, priority: draftPriority, projectID: draftProjectID, projectWasChosen: draftProjectWasChosen) }
 
     func openWorkspace() {
         guard workspace == nil else { return }
@@ -47,6 +48,7 @@ final class WorkspaceEditor {
             draftTitle = opened.creationDraft?.title ?? ""
             draftPriority = opened.creationDraft?.priority ?? .none
             draftProjectID = opened.creationDraft?.projectID
+            draftProjectWasChosen = opened.creationDraft?.projectWasChosen ?? false
             openingError = nil
         } catch { openingError = error.localizedDescription }
     }
@@ -60,7 +62,7 @@ final class WorkspaceEditor {
 
     func openCreation() {
         guard saveDetails() else { return }
-        if workspace?.creationDraft == nil && draftTitle.isEmpty && draftPriority == .none && draftProjectID == nil {
+        if workspace?.creationDraft == nil && draft.isEmpty {
             draftProjectID = selectedProjectID
             _ = saveDraft()
         }
@@ -94,6 +96,7 @@ final class WorkspaceEditor {
             draftTitle = ""
             draftPriority = .none
             draftProjectID = nil
+            draftProjectWasChosen = false
             draftError = nil
         } catch { draftError = error.localizedDescription }
     }
@@ -105,6 +108,7 @@ final class WorkspaceEditor {
             draftTitle = ""
             draftPriority = .none
             draftProjectID = nil
+            draftProjectWasChosen = false
             draftError = nil
             isCreating = false
             showDetails(for: task)
