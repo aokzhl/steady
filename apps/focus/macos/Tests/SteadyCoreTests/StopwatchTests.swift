@@ -1,0 +1,347 @@
+import Foundation
+import SteadyCore
+import Testing
+
+@MainActor
+struct StopwatchTests {
+    @Test
+    func sevenActiveMinutesExcludePauseAndKeepTheSameRun() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        var instant = Date(timeIntervalSince1970: 1_800_000_000)
+        var zone = TimeZone(identifier: "Asia/Almaty")!
+        let workspace = try TaskWorkspace(databaseURL: url, now: { instant }, calendar: {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = zone
+            return calendar
+        })
+        let task = try workspace.createTask(title: "Читать")
+        try workspace.startStopwatch(occurrenceID: task.occurrenceID)
+        let run = try #require(workspace.activeSession)
+        #expect(run.kind == .stopwatch)
+        #expect(run.taskID == task.id)
+        #expect(run.occurrenceID == task.occurrenceID)
+        instant += 180
+        try workspace.pauseSession()
+        try workspace.pauseSession()
+        instant += 600
+        #expect(workspace.elapsedSeconds == 180)
+        #expect(throws: WorkspaceError.sessionOccupied) { try workspace.startStopwatch() }
+        zone = TimeZone(identifier: "America/New_York")!
+        try workspace.resumeSession()
+        try workspace.resumeSession()
+        instant += 240
+        #expect(workspace.elapsedSeconds == 420)
+        try workspace.stopSession()
+        try workspace.stopSession() // A repeated stop must never duplicate the result.
+        let saved = try #require(workspace.timeToolResults.first)
+        #expect(saved.id == run.id)
+        #expect(saved.durationSeconds == 420)
+        #expect(saved.timeZoneIdentifier == "Asia/Almaty")
+        #expect(saved.segments.count == 2)
+        #expect(saved.segments[0].startedAt == Date(timeIntervalSince1970: 1_800_000_000))
+        #expect(saved.segments[0].endedAt == Date(timeIntervalSince1970: 1_800_000_180))
+        #expect(saved.segments[1].startedAt == Date(timeIntervalSince1970: 1_800_000_780))
+        #expect(saved.segments[1].endedAt == Date(timeIntervalSince1970: 1_800_001_020))
+        #expect(workspace.tasks.first?.completedAt == nil)
+        #expect(workspace.activeSession == nil)
+        let reopened = try TaskWorkspace(databaseURL: url)
+        #expect(reopened.timeToolResults == [saved])
+    }
+    @Test
+    func completingOnlyTheOwnerSavesTheRunAndCompletionTogether() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        var instant = Date(timeIntervalSince1970: 1_800_000_000)
+        let workspace = try TaskWorkspace(databaseURL: url, now: { instant })
+        let owner = try workspace.createTask(title: "Владелец")
+        let other = try workspace.createTask(title: "Другая задача")
+        try workspace.startStopwatch(occurrenceID: owner.occurrenceID)
+        let id = try #require(workspace.activeSession?.id)
+        instant += 60
+        try workspace.setCompleted(occurrenceID: other.occurrenceID, completed: true)
+        #expect(workspace.activeSession?.id == id)
+        #expect(workspace.timeToolResults.isEmpty)
+        instant += 60
+        try workspace.setCompleted(occurrenceID: owner.occurrenceID, completed: true)
+        let reopened = try TaskWorkspace(databaseURL: url)
+        #expect(reopened.activeSession == nil)
+        #expect(reopened.timeToolResults.first?.id == id)
+        #expect(reopened.timeToolResults.first?.durationSeconds == 120)
+        #expect(reopened.tasks.first?.completedAt == instant)
+        try workspace.setCompleted(occurrenceID: owner.occurrenceID, completed: true)
+        #expect(workspace.timeToolResults.count == 1)
+    }
+
+    @Test(arguments: [false, true])
+    func stoppingAndCompletingOwnerKeepRunBoundsConsistentAfterClockMovesBackward(completeOwner: Bool) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        var instant = Date(timeIntervalSince1970: 1000)
+        let workspace = try TaskWorkspace(databaseURL: url, now: { instant })
+        let owner = try workspace.createTask(title: "Владелец")
+        try workspace.startStopwatch(occurrenceID: owner.occurrenceID)
+        instant = Date(timeIntervalSince1970: 1100)
+        try workspace.pauseSession()
+        instant = Date(timeIntervalSince1970: 1200)
+        try workspace.resumeSession()
+        instant = Date(timeIntervalSince1970: 1150)
+        if completeOwner {
+            try workspace.setCompleted(occurrenceID: owner.occurrenceID, completed: true)
+        } else {
+            try workspace.stopSession()
+        }
+        let reopened = try TaskWorkspace(databaseURL: url)
+        let result = try #require(reopened.timeToolResults.first)
+        #expect(result.stoppedAt == Date(timeIntervalSince1970: 1200))
+        #expect(result.segments.last?.endedAt == Date(timeIntervalSince1970: 1200))
+        #expect(result.durationSeconds == 100)
+        #expect(reopened.activeSession == nil)
+        #expect(reopened.tasks.first?.completedAt == (completeOwner ? instant : nil))
+    }
+
+    @Test
+    func freeRunsOfTenAndFifteenMinutesHaveDistinctPersistentResults() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        var instant = Date(timeIntervalSince1970: 1_800_000_000)
+        let workspace = try TaskWorkspace(databaseURL: url, now: { instant })
+        try workspace.startStopwatch()
+        instant += 600
+        try workspace.stopSession()
+        instant += 120
+        try workspace.startStopwatch()
+        instant += 900
+        try workspace.stopSession()
+        let reopened = try TaskWorkspace(databaseURL: url)
+        #expect(reopened.timeToolResults.map(\.durationSeconds) == [600, 900])
+        #expect(Set(reopened.timeToolResults.map(\.id)).count == 2)
+        #expect(reopened.timeToolResults.allSatisfy { $0.taskID == nil && $0.occurrenceID == nil })
+        #expect(reopened.tasks.isEmpty)
+    }
+
+    @Test
+    func failedStopPausesInMemoryAndRetrySavesOnlyTheMeasuredWork() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let moved = directory.appendingPathExtension("moved")
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: moved)
+        }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        var instant = Date(timeIntervalSince1970: 1_800_000_000)
+        let workspace = try TaskWorkspace(databaseURL: url, now: { instant })
+        let owner = try workspace.createTask(title: "Сохранить надёжно")
+        try workspace.startStopwatch(occurrenceID: owner.occurrenceID)
+        instant += 90
+        try FileManager.default.moveItem(at: directory, to: moved)
+        try Data().write(to: directory)
+        #expect(throws: (any Error).self) { try workspace.setCompleted(occurrenceID: owner.occurrenceID, completed: true) }
+        #expect(workspace.activeSession?.isPaused == true)
+        #expect(workspace.tasks.first?.completedAt == nil)
+        #expect(workspace.timeToolResults.isEmpty)
+        instant += 600
+        #expect(workspace.elapsedSeconds == 90)
+        try FileManager.default.removeItem(at: directory)
+        try FileManager.default.moveItem(at: moved, to: directory)
+        try workspace.setCompleted(occurrenceID: owner.occurrenceID, completed: true)
+        let reopened = try TaskWorkspace(databaseURL: url)
+        #expect(reopened.timeToolResults.first?.durationSeconds == 90)
+        #expect(reopened.tasks.first?.completedAt == instant)
+        #expect(reopened.timeToolResults.count == 1)
+    }
+
+    @Test
+    func failedCommandFreezesAtItsInstantEvenWhenTheClockAdvancesDuringFailure() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let moved = directory.appendingPathExtension("moved")
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: moved)
+        }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        var instant = Date(timeIntervalSince1970: 1_800_000_000)
+        var advanceClock = false
+        let workspace = try TaskWorkspace(databaseURL: url, now: {
+            let commandInstant = instant
+            if advanceClock { instant += 600 }
+            return commandInstant
+        })
+        try workspace.startStopwatch()
+        instant += 90
+        try FileManager.default.moveItem(at: directory, to: moved)
+        try Data().write(to: directory)
+        advanceClock = true
+        #expect(throws: (any Error).self) { try workspace.stopSession() }
+        advanceClock = false
+        #expect(workspace.sessionNeedsSave)
+        #expect(workspace.activeSession?.isPaused == true)
+        #expect(workspace.elapsedSeconds == 90)
+        try FileManager.default.removeItem(at: directory)
+        try FileManager.default.moveItem(at: moved, to: directory)
+        try workspace.retrySessionSave()
+        try workspace.stopSession()
+        let reopened = try TaskWorkspace(databaseURL: url)
+        #expect(reopened.timeToolResults.first?.durationSeconds == 90)
+    }
+
+    @Test
+    func reopeningPausesAtTheLastCommittedBoundaryWithoutCountingAbsence() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        var instant = Date(timeIntervalSince1970: 1_800_000_000)
+        var workspace: TaskWorkspace? = try TaskWorkspace(databaseURL: url, now: { instant })
+        try workspace?.startStopwatch()
+        let id = try #require(workspace?.activeSession?.id)
+        instant += 180
+        try workspace?.pauseSession()
+        instant += 120
+        try workspace?.resumeSession()
+        instant += 40
+        workspace = nil // Simulate a restart without another explicit command/checkpoint.
+        instant += 600
+        let reopened = try TaskWorkspace(databaseURL: url, now: { instant })
+        #expect(reopened.activeSession?.id == id)
+        #expect(reopened.activeSession?.isPaused == true)
+        #expect(reopened.elapsedSeconds == 180)
+        #expect(throws: WorkspaceError.sessionOccupied) { try reopened.startStopwatch() }
+        try reopened.resumeSession()
+        instant += 60
+        try reopened.stopSession()
+        #expect(reopened.timeToolResults.first?.durationSeconds == 240)
+    }
+
+    @Test
+    func versionTwoTaskAndDraftSurviveTheTimeToolMigration() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("steady.sqlite")
+        let fixture = Process()
+        fixture.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        fixture.arguments = [url.path, """
+            CREATE TABLE tasks (id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, created_at REAL NOT NULL, priority TEXT NOT NULL);
+            CREATE TABLE task_occurrences (id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id), planned_day TEXT NOT NULL, time_zone TEXT NOT NULL, completed_at REAL);
+            CREATE TABLE creation_draft (id INTEGER PRIMARY KEY, title TEXT NOT NULL, priority TEXT NOT NULL);
+            INSERT INTO tasks VALUES ('11111111-1111-1111-1111-111111111111', 'Существующее дело', 1800000000, 'high');
+            INSERT INTO task_occurrences VALUES ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', '2026-11-12', 'Asia/Almaty', NULL);
+            INSERT INTO creation_draft VALUES (1, 'Черновик', 'low');
+            PRAGMA user_version = 2;
+            """]
+        try fixture.run()
+        fixture.waitUntilExit()
+        try #require(fixture.terminationStatus == 0)
+        var instant = Date(timeIntervalSince1970: 1_800_000_000)
+        let workspace = try TaskWorkspace(databaseURL: url, now: { instant })
+        let old = try #require(workspace.tasks.first)
+        #expect(old.title == "Существующее дело")
+        #expect(old.priority == .high)
+        #expect(old.plannedDay == "2026-11-12")
+        #expect(workspace.creationDraft == CreationDraft(title: "Черновик", priority: .low))
+        try workspace.startStopwatch(occurrenceID: old.occurrenceID)
+        instant += 75
+        try workspace.stopSession()
+        let reopened = try TaskWorkspace(databaseURL: url)
+        #expect(reopened.tasks == [old])
+        #expect(reopened.creationDraft == CreationDraft(title: "Черновик", priority: .low))
+        #expect(reopened.timeToolResults.first?.durationSeconds == 75)
+        #expect(reopened.timeToolResults.first?.taskID == old.id)
+    }
+
+    @Test(arguments: [4, 5])
+    func shippedProjectsNotesDatesAndDraftChoiceSurviveStopwatchMigration(version: Int) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("steady.sqlite")
+        let fixture = Process()
+        fixture.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        fixture.arguments = [url.path, """
+            CREATE TABLE projects (id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, color TEXT, created_at REAL NOT NULL);
+            CREATE TABLE tasks (id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, created_at REAL NOT NULL, priority TEXT NOT NULL, project_id TEXT REFERENCES projects(id), note_rtf BLOB NOT NULL, note_text TEXT NOT NULL);
+            CREATE TABLE task_occurrences (id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id), planned_day TEXT NOT NULL, time_zone TEXT NOT NULL, completed_at REAL);
+            CREATE TABLE creation_draft (id INTEGER PRIMARY KEY, title TEXT NOT NULL, priority TEXT NOT NULL, project_id TEXT REFERENCES projects(id), project_was_chosen INTEGER NOT NULL, note_rtf BLOB NOT NULL, note_text TEXT NOT NULL);
+            INSERT INTO projects VALUES ('33333333-3333-3333-3333-333333333333', 'Учёба', 'green', 1800000000);
+            INSERT INTO tasks VALUES ('11111111-1111-1111-1111-111111111111', 'Читать', 1800000000, 'high', '33333333-3333-3333-3333-333333333333', X'7b5c72746631207d', 'Заметка дела');
+            INSERT INTO task_occurrences VALUES ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', '2026-11-12', 'Asia/Almaty', NULL);
+            INSERT INTO creation_draft VALUES (1, '', 'none', NULL, 1, X'7b5c72746631207d', 'Заметка черновика');
+            PRAGMA user_version = 4;
+            \(version == 5 ? """
+            CREATE TABLE task_occurrences_v5 (id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id), planned_day TEXT, time_zone TEXT NOT NULL, completed_at REAL);
+            INSERT INTO task_occurrences_v5 SELECT id, task_id, NULL, time_zone, completed_at FROM task_occurrences;
+            DROP TABLE task_occurrences;
+            ALTER TABLE task_occurrences_v5 RENAME TO task_occurrences;
+            ALTER TABLE creation_draft ADD COLUMN planned_day TEXT;
+            ALTER TABLE creation_draft ADD COLUMN day_was_chosen INTEGER NOT NULL DEFAULT 0 CHECK(day_was_chosen IN (0, 1));
+            UPDATE creation_draft SET planned_day = '2027-01-02', day_was_chosen = 1;
+            PRAGMA user_version = 5;
+            """ : "")
+            """]
+        try fixture.run()
+        fixture.waitUntilExit()
+        try #require(fixture.terminationStatus == 0)
+        var instant = Date(timeIntervalSince1970: 1_800_000_000)
+        let workspace = try TaskWorkspace(databaseURL: url, now: { instant })
+        let old = try #require(workspace.tasks.first)
+        #expect(workspace.projects.first?.title == "Учёба")
+        #expect(workspace.projects.first?.color == .green)
+        #expect(old.projectID == workspace.projects.first?.id)
+        #expect(old.plannedDay == (version == 5 ? nil : "2026-11-12"))
+        #expect(old.note.plainText == "Заметка дела")
+        #expect(old.note.rtf == Data([0x7b, 0x5c, 0x72, 0x74, 0x66, 0x31, 0x20, 0x7d]))
+        let draft = try #require(workspace.creationDraft)
+        #expect(draft.projectID == nil)
+        #expect(draft.projectWasChosen)
+        #expect(draft.dayWasChosen == (version == 5))
+        #expect(draft.plannedDay == (version == 5 ? "2027-01-02" : nil))
+        #expect(!draft.isEmpty)
+        #expect(draft.note.plainText == "Заметка черновика")
+        #expect(draft.note.rtf == old.note.rtf)
+        try workspace.startStopwatch(occurrenceID: old.occurrenceID)
+        instant += 60
+        try workspace.stopSession()
+        let reopened = try TaskWorkspace(databaseURL: url)
+        #expect(reopened.tasks == [old])
+        #expect(reopened.projects == workspace.projects)
+        #expect(reopened.creationDraft == draft)
+        #expect(reopened.timeToolResults.first?.durationSeconds == 60)
+    }
+
+    @Test(arguments: [nil, "2027-01-02"] as [String?])
+    func changingOwnerDayKeepsSessionIdentityAndDoesNotChangeMeasuredWork(day: String?) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        var instant = Date(timeIntervalSince1970: 1_800_000_000)
+        let workspace = try TaskWorkspace(databaseURL: url, now: { instant })
+        let project = try workspace.createProject(title: "Учёба", color: .green)
+        let note = TaskNote(rtf: Data([0x7b, 0x7d]), plainText: "Заметка")
+        let owner = try workspace.createTask(title: "Владелец", projectID: project.id, plannedDay: day, note: note)
+        let draft = CreationDraft(title: "Черновик", plannedDay: "2027-02-01", note: note)
+        try workspace.saveCreationDraft(draft)
+        try workspace.startStopwatch(occurrenceID: owner.occurrenceID)
+        let runID = try #require(workspace.activeSession?.id)
+        instant += 30
+        try workspace.setPlannedDay(occurrenceID: owner.occurrenceID, day: day == nil ? "2027-01-02" : nil)
+        #expect(workspace.activeSession?.id == runID)
+        #expect(workspace.activeSession?.occurrenceID == owner.occurrenceID)
+        instant += 30
+        try workspace.setCompleted(occurrenceID: owner.occurrenceID, completed: true)
+        let reopened = try TaskWorkspace(databaseURL: url)
+        let saved = try #require(reopened.tasks.first)
+        #expect(saved.id == owner.id)
+        #expect(saved.plannedDay == (day == nil ? "2027-01-02" : nil))
+        #expect(saved.projectID == project.id)
+        #expect(saved.note == note)
+        #expect(reopened.creationDraft == draft)
+        #expect(reopened.timeToolResults.first?.id == runID)
+        #expect(reopened.timeToolResults.first?.durationSeconds == 60)
+        #expect(reopened.activeSession == nil)
+    }
+
+}

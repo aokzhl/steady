@@ -304,16 +304,60 @@ final class WorkspaceEditor {
         } catch { actionError = error.localizedDescription }
     }
 
+    var activeSessionOwner: TaskRecord? {
+        guard let occurrenceID = workspace?.activeSession?.occurrenceID else { return nil }
+        return workspace?.tasks.first { $0.occurrenceID == occurrenceID }
+    }
+
+    func showActiveSessionOwner() {
+        guard let owner = activeSessionOwner, saveDetails() else { return }
+        if isCreating {
+            guard saveDraft() else { return }
+            isCreating = false
+        }
+        let saved = workspace?.tasks.first { $0.id == owner.id } ?? owner
+        selectedProjectID = saved.projectID
+        period = .all
+        showDetails(for: saved)
+    }
+
+    func startStopwatch(_ task: TaskRecord? = nil) {
+        performTimeToolAction { try workspace?.startStopwatch(occurrenceID: task?.occurrenceID) }
+    }
+
+    func toggleSessionPause() {
+        performTimeToolAction {
+            if workspace?.activeSession?.isPaused == true { try workspace?.resumeSession() }
+            else { try workspace?.pauseSession() }
+        }
+    }
+
+    func stopSession() {
+        performTimeToolAction { try workspace?.stopSession() }
+    }
+
+    func retrySessionSave() {
+        performTimeToolAction { try workspace?.retrySessionSave() }
+    }
+
+    private func performTimeToolAction(_ action: () throws -> Void) {
+        do { try action(); actionError = nil }
+        catch { actionError = error.localizedDescription }
+    }
+
     func prepareToTerminate() -> Bool {
         while true {
             let draftSaved = saveDraft()
             let detailsSaved = saveDetails()
-            if draftSaved && detailsSaved { return true }
+            var sessionSaved = true
+            do { try workspace?.pauseSession() }
+            catch { actionError = error.localizedDescription; sessionSaved = false }
+            if draftSaved && detailsSaved && sessionSaved { return true }
             // No editable input exists when opening the database itself failed.
             if workspace == nil { return true }
             let alert = NSAlert()
             alert.messageText = "Есть несохранённые изменения"
-            alert.informativeText = "Не удалось сохранить ввод на Mac. Можно повторить запись, вернуться в приложение или явно выйти без несохранённых изменений. Ранее сохранённые данные останутся."
+            alert.informativeText = "Не удалось сохранить изменения или текущую сессию на Mac. Можно повторить запись, вернуться в приложение или явно выйти без несохранённых изменений. Ранее сохранённые данные останутся."
             alert.addButton(withTitle: "Повторить сохранение")
             alert.addButton(withTitle: "Отмена")
             alert.addButton(withTitle: "Выйти без сохранения")
