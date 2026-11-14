@@ -358,7 +358,13 @@ public final class TaskWorkspace {
 
     public var openToday: [TaskRecord] {
         let day = today
-        return tasks.filter { task in task.completedAt == nil && task.skippedAt == nil && (task.periodEnd.map { (task.seriesDay ?? "") <= day && day <= $0 && (task.plannedDay == nil || task.plannedDay! <= day) } ?? (task.plannedDay.map { task.seriesStart == nil ? $0 <= day : $0 == day } == true)) }
+        return tasks.filter { task in
+            guard task.completedAt == nil, task.skippedAt == nil else { return false }
+            if let end = task.periodEnd, let start = task.seriesDay {
+                return start <= day && day <= end && task.plannedDay.map { $0 <= day } != false
+            }
+            return task.plannedDay.map { task.seriesStart == nil ? $0 <= day : $0 == day } ?? false
+        }
     }
 
     public var currentWeekTasks: [TaskRecord] {

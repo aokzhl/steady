@@ -2,6 +2,7 @@ import CSQLite
 import Foundation
 
 public enum WorkspaceError: Error, Equatable, LocalizedError {
+    case activeOwnerRequiresStop
     case outsideOccurrenceWeek
     case invalidRecurrence
     case timerDurationRequired
@@ -24,6 +25,8 @@ public enum WorkspaceError: Error, Equatable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
+        case .activeOwnerRequiresStop:
+            "Сначала нажмите Stop, затем пропустите выполнение. Сессия на паузе тоже занимает активный инструмент."
         case .outsideOccurrenceWeek:
             "Недельное выполнение можно назначить только на день своей недели, с понедельника по воскресенье."
         case .invalidRecurrence:
@@ -86,7 +89,7 @@ final class SQLiteDatabase {
                 guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
                 return Int(sqlite3_column_int(query, 0))
             }
-            guard version <= 9 else { throw WorkspaceError.unsupportedSchema(version) }
+            guard version <= 10 else { throw WorkspaceError.unsupportedSchema(version) }
             if version == 0 { try migrateToVersionOne() }
             if version < 2 { try migrateToVersionTwo() }
             if version < 3 { try migrateToVersionThree() }
@@ -96,6 +99,7 @@ final class SQLiteDatabase {
             if version < 7 { try migrateToVersionSeven() }
             if version < 8 { try migrateToVersionEight() }
             if version < 9 { try migrateToVersionNine() }
+            if version < 10 { try migrateToVersionTen() }
         } catch {
             sqlite3_close(connection)
             connection = nil
@@ -105,13 +109,13 @@ final class SQLiteDatabase {
 
     deinit { sqlite3_close(connection) }
 
-    private func migrateToVersionNine() throws {
+    private func migrateToVersionTen() throws {
         try transaction {
             try execute("ALTER TABLE task_occurrences ADD COLUMN period_end TEXT")
             try execute("ALTER TABLE task_occurrences ADD COLUMN skipped_at REAL")
             try execute("DROP INDEX occurrence_series_day")
             try execute("CREATE UNIQUE INDEX occurrence_series_day ON task_occurrences(task_id, series_day, COALESCE(period_end, ''))")
-            try execute("PRAGMA user_version = 9")
+            try execute("PRAGMA user_version = 10")
         }
     }
 
@@ -474,7 +478,7 @@ final class SQLiteDatabase {
                 record.seriesDay = sqlite3_column_type(query, 10) == SQLITE_NULL ? nil : text(query, 10)
                 record.skippedAt = sqlite3_column_type(query, 12) == SQLITE_NULL ? nil : Date(timeIntervalSince1970: sqlite3_column_double(query, 12))
                 record.periodEnd = sqlite3_column_type(query, 11) == SQLITE_NULL ? nil : text(query, 11)
-                let day = max(record.seriesDay ?? record.plannedDay ?? "9999-12-31", rules.first?.day ?? "")
+                let day = record.periodEnd ?? max(record.seriesDay ?? record.plannedDay ?? "9999-12-31", rules.first?.day ?? "")
                 record.recurrence = rules.last { $0.day <= day }?.recurrence
                 records.append(record)
                 result = sqlite3_step(query)
@@ -533,9 +537,9 @@ final class SQLiteDatabase {
         try transaction {
             guard let task = try records().first(where: { $0.occurrenceID == occurrenceID }) else { throw WorkspaceError.occurrenceNotFound }
             guard task.periodEnd != nil else { throw WorkspaceError.invalidRecurrence }
-            if skipped, var session = try activeTimeToolSession(), session.occurrenceID == occurrenceID {
-                session.stop(at: instant)
-                try saveTimeToolSession(session)
+            guard (task.skippedAt != nil) != skipped else { return try records() }
+            if skipped, try activeTimeToolSession()?.occurrenceID == occurrenceID {
+                throw WorkspaceError.activeOwnerRequiresStop
             }
             try execute("UPDATE task_occurrences SET skipped_at = ?, completed_at = NULL, individual_override = 1 WHERE id = ?", [skipped ? .number(instant.timeIntervalSince1970) : .null, .text(occurrenceID.uuidString)])
             return try records()

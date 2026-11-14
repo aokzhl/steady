@@ -499,6 +499,11 @@ private struct DetailPanel: View {
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                     Button(task.skippedAt == nil ? "Пропустить выполнение" : "Вернуть в работу") { editor.toggleSkipped(task) }
                         .buttonStyle(.bordered)
+                        .disabled(task.skippedAt == nil && editor.workspace?.activeSession?.occurrenceID == task.occurrenceID)
+                    if editor.workspace?.activeSession?.occurrenceID == task.occurrenceID {
+                        Text("Сначала нажмите Stop, затем пропустите выполнение.")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
                 } else {
                     Label(dayLabel(task.plannedDay, today: editor.workspace?.today, tomorrow: editor.workspace?.tomorrow), systemImage: "calendar")
                         .font(.system(size: 12))
@@ -705,7 +710,7 @@ private struct ToolMenu: View {
     var body: some View {
         Menu {
             Button(timerTitle) { editor.requestTimer(task) }
-                .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil)
+                .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil || task?.skippedAt != nil)
             Button("Помодоро · Не задано") {}.disabled(true)
             Button("Секундомер · Счёт вверх") { editor.startStopwatch(task) }
                 .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil || task?.skippedAt != nil)
