@@ -88,6 +88,52 @@ final class WorkspaceEditor {
         reload()
         return true
     }
+    var presentation: TaskPresentation {
+        get { navigation.presentation }
+        set { navigation.presentation = newValue; prepareCalendar() }
+    }
+    var calendarMonth: String {
+        guard let workspace else { return "" }
+        switch period {
+        case .today, .week: return workspace.currentMonth
+        case .tomorrow: return String(workspace.tomorrow.prefix(7)) + "-01"
+        case .month: return context.namedMonth ?? workspace.currentMonth
+        case .all, .completed: return navigation.calendarMonth ?? workspace.currentMonth
+        }
+    }
+    var calendarResult: TaskCalendarResult? { workspace?.taskCalendar(month: calendarMonth, in: context) }
+    var calendarDay: String? {
+        get { navigation.calendarDay }
+        set { navigation.calendarDay = newValue }
+    }
+    func prepareCalendar() {
+        do { try workspace?.prepareCalendar(month: calendarMonth) }
+        catch { actionError = error.localizedDescription }
+    }
+    func moveMonth(_ offset: Int) {
+        guard saveDetails(), let workspace else { return }
+        let month = workspace.adjacentMonth(calendarMonth, offset: offset)
+        navigation.calendarMonth = month
+        context.namedMonth = month
+        period = .month
+        calendarDay = nil
+        detailsVisible = false
+        prepareCalendar()
+    }
+    func openCalendarDay(_ day: String) {
+        guard saveDetails() else { return }
+        if isCreating { closeCreation() }
+        calendarDay = day
+        detailsVisible = false
+    }
+    func createOnDay(_ day: String) {
+        openCalendarDay(day)
+        guard calendarDay == day else { return }
+        openCreation()
+        draftDay = day
+        draftDayWasChosen = true
+        _ = saveDraft()
+    }
     var contextTitle: String {
         let project = workspace?.projects.first { $0.id == selectedProjectID }?.title
         let labels = workspace?.labels.filter { context.labelIDs.contains($0.id) }.map(\.title) ?? []
@@ -173,6 +219,7 @@ final class WorkspaceEditor {
             restoringNavigation = true
             navigation = opened.preferences
             try opened.prepareTaskList(in: context)
+            if presentation == .calendar { try opened.prepareCalendar(month: calendarMonth) }
             if let task = selectedTask {
                 let visible = navigation.detailsVisible
                 showDetails(for: task)
@@ -202,6 +249,7 @@ final class WorkspaceEditor {
         do {
             try workspace?.reload()
             try workspace?.prepareTaskList(in: context)
+            if presentation == .calendar { try workspace?.prepareCalendar(month: calendarMonth) }
             actionError = nil
         } catch { actionError = error.localizedDescription }
     }
@@ -210,7 +258,7 @@ final class WorkspaceEditor {
         guard saveDetails() else { return }
         guard let workspace, saveDraft() else { isCreating = true; return }
         do {
-            let prepared = try workspace.prepareCreationDraft(projectID: selectedProjectID, plannedDay: contextDay, labelIDs: context.labelIDs)
+            let prepared = try workspace.prepareCreationDraft(projectID: selectedProjectID, plannedDay: presentation == .calendar ? (calendarDay ?? contextDay) : contextDay, labelIDs: context.labelIDs)
             draftProjectID = prepared.projectID
             draftDay = prepared.plannedDay
             draftLabelIDs = prepared.labelIDs
@@ -517,9 +565,13 @@ final class WorkspaceEditor {
         do {
             var next = context
             next.period = value
+            next.namedMonth = nil
+            navigation.calendarMonth = value == .tomorrow ? workspace.map { String($0.tomorrow.prefix(7)) + "-01" } : workspace?.currentMonth
+            calendarDay = nil
             try workspace?.prepareTaskList(in: next)
             actionError = nil
             context = next
+            if presentation == .calendar { prepareCalendar() }
             detailsVisible = false
         } catch { actionError = error.localizedDescription }
     }

@@ -53,8 +53,19 @@ struct WorkspaceView: View {
                                 .background(Palette.sidebar)
                         } else if editor.detailsVisible, let task = editor.selectedTask {
                             Divider()
-                            DetailPanel(editor: editor, task: task, isPage: isNarrow)
-                                .id(task.occurrenceID)
+                            VStack(spacing: 0) {
+                                if !isNarrow, let day = editor.calendarDay, editor.presentation == .calendar {
+                                    Button("Назад к дню · " + day) { editor.closeDetails() }
+                                        .buttonStyle(.plain).padding(12)
+                                }
+                                DetailPanel(editor: editor, task: task, isPage: isNarrow).id(task.occurrenceID)
+                            }
+                                .frame(width: isNarrow ? nil : 340)
+                                .frame(maxWidth: isNarrow ? .infinity : nil)
+                                .background(Palette.sidebar)
+                        } else if editor.presentation == .calendar, let day = editor.calendarDay {
+                            Divider()
+                            calendarDayPanel(day, isPage: isNarrow)
                                 .frame(width: isNarrow ? nil : 340)
                                 .frame(maxWidth: isNarrow ? .infinity : nil)
                                 .background(Palette.sidebar)
@@ -107,7 +118,7 @@ struct WorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in editor.reload() }
     }
 
-    private var panelVisible: Bool { editor.screen == .tasks && (editor.isCreating || (editor.detailsVisible && editor.selectedTask != nil)) }
+    private var panelVisible: Bool { editor.screen == .tasks && (editor.isCreating || (editor.detailsVisible && editor.selectedTask != nil) || (editor.presentation == .calendar && editor.calendarDay != nil)) }
 
     private var header: some View {
         HStack(spacing: 14) {
@@ -284,14 +295,17 @@ struct WorkspaceView: View {
                         .buttonStyle(.plain).accessibilityLabel("Удалить метку")
                 }
                 Spacer()
-                Label("Список", systemImage: "list.bullet")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                Picker("Вид", selection: $editor.presentation) {
+                    Text("Список").tag(TaskPresentation.list)
+                    Text("Календарь").tag(TaskPresentation.calendar)
+                }.pickerStyle(.segmented).frame(width: 170)
+                    .accessibilityIdentifier("task-presentation")
             }
             HStack(spacing: 2) {
                 ForEach([TaskPeriod.all, .today, .tomorrow], id: \.self) { period in
                     periodButton(period)
                 }
-                MorePeriods(selected: editor.period, select: editor.selectPeriod)
+                MorePeriods(selected: editor.period, namedMonth: editor.context.namedMonth, select: editor.selectPeriod)
                 periodButton(.completed)
                 Spacer(minLength: 4)
                 Menu {
@@ -339,6 +353,9 @@ struct WorkspaceView: View {
                     StorageNotice(message: "Черновик не сохранён. " + draftError)
                     Button("Вернуться к черновику", action: editor.openCreation)
                 }
+                if editor.presentation == .calendar {
+                    MonthCalendar(editor: editor)
+                } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
                         if let result {
@@ -373,6 +390,7 @@ struct WorkspaceView: View {
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     .padding(.bottom, 20)
                 }
+                }
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -381,6 +399,21 @@ struct WorkspaceView: View {
         .padding(.horizontal, editor.isCreating ? 16 : 20)
         .padding(.top, 24).padding(.bottom, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func calendarDayPanel(_ day: String, isPage: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            PanelHeader(title: day, isPage: isPage, close: { editor.calendarDay = nil })
+            Button("Добавить на этот день") { editor.createOnDay(day) }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    let tasks = editor.calendarResult?.days.first { $0.day == day }?.tasks ?? []
+                    if tasks.isEmpty { Text("Нет задач за этот день").foregroundStyle(.secondary) }
+                    ForEach(tasks, id: \.occurrenceID) { task in plainTaskRow(task) }
+                }
+            }
+            Spacer(minLength: 0)
+        }.padding(20)
     }
 
     private var emptyState: some View {
@@ -1263,13 +1296,14 @@ private func historyDate(_ date: Date, zone: String) -> String {
 
 private struct MorePeriods: View {
     let selected: TaskPeriod
+    var namedMonth: String? = nil
     let select: (TaskPeriod) -> Void
     @State private var expanded = false
     @State private var keyboardSelection: TaskPeriod = .week
 
     var body: some View {
         Button { expanded = true } label: {
-            Text(selected == .week || selected == .month ? "Ещё · " + selected.label : "Ещё")
+            Text(selected == .week || selected == .month ? "Ещё · " + (namedMonth.map { String($0.prefix(7)) } ?? selected.label) : "Ещё")
                 .font(.system(size: 12)).padding(.horizontal, 10).padding(.vertical, 7)
                 .background(selected == .week || selected == .month ? Palette.accent.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 7))
         }

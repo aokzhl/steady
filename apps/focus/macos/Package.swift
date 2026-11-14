@@ -12,6 +12,6 @@ let package = Package(
         .systemLibrary(name: "CSQLite"),
         .target(name: "SteadyCore", dependencies: ["CSQLite"]),
         .executableTarget(name: "SteadyApp", dependencies: ["SteadyCore"]),
-        .testTarget(name: "SteadyCoreTests", dependencies: ["SteadyCore"]),
+        .testTarget(name: "SteadyCoreTests", dependencies: ["SteadyCore"], exclude: ["Fixtures"]),
     ]
 )

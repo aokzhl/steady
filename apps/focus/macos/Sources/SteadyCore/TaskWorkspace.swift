@@ -195,7 +195,7 @@ public final class TaskWorkspace {
         var current = Calendar(identifier: .gregorian)
         current.timeZone = calendar().timeZone
         let date = now()
-        let bounds = periodBounds(for: context.period, at: date, calendar: current)
+        let bounds = periodBounds(for: context.period, at: context.namedMonth.flatMap { calendarDate($0) } ?? date, calendar: current)
         tasks = try database.refreshOccurrences(today: today, timeZone: current.timeZone.identifier, through: bounds.end)
     }
 
@@ -671,7 +671,7 @@ extension TaskWorkspace {
         var current = Calendar(identifier: .gregorian)
         current.timeZone = calendar().timeZone
         let day = DayContext(date: date, calendar: current)
-        let bounds = periodBounds(for: context.period, at: date, calendar: current)
+        let bounds = periodBounds(for: context.period, at: context.namedMonth.flatMap { calendarDate($0) } ?? date, calendar: current)
         let source = context.period == .all ? visibleTasks : tasks
         let periodMatches = source.filter { task in
             if context.period == .completed { return task.completedAt != nil }
@@ -734,5 +734,72 @@ extension TaskWorkspace {
         if !unassigned.isEmpty { groups.append(TaskListGroup(id: "unassigned", title: "Без проекта", roots: unassigned, matchCount: count(unassigned))) }
         let empty: TaskListEmptyReason? = matches.isEmpty ? (tasks.isEmpty ? .emptyDatabase : !query.isEmpty ? .noSearchMatches : periodMatches.isEmpty ? .emptyPeriod : .noMatches) : nil
         return TaskListResult(matches: matches, roots: roots, contextParentIDs: contextParents, groups: groups, emptyReason: empty)
+    }
+}
+
+extension TaskWorkspace {
+    // Calendar dates remain date-only keys; use the same injected calendar zone as period bounds.
+    private func calendarDate(_ day: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = calendar().timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        return formatter.date(from: day)
+    }
+
+    public var currentMonth: String { String(today.prefix(7)) + "-01" }
+
+    public func adjacentMonth(_ month: String, offset: Int) -> String {
+        var current = Calendar(identifier: .gregorian)
+        current.timeZone = calendar().timeZone
+        guard let date = calendarDate(month), let next = current.date(byAdding: .month, value: offset, to: date) else { return currentMonth }
+        return String(DayContext(date: next, calendar: current).day.prefix(7)) + "-01"
+    }
+
+    public func prepareCalendar(month: String) throws {
+        guard let date = calendarDate(month) else { return }
+        var value = Calendar(identifier: .gregorian)
+        value.timeZone = calendar().timeZone
+        let interval = value.dateInterval(of: .month, for: date)!
+        let last = value.date(byAdding: .day, value: -1, to: interval.end)!
+        _ = try occurrences(from: DayContext(date: interval.start, calendar: value).day, through: DayContext(date: last, calendar: value).day)
+    }
+
+    public func taskCalendar(month: String, in context: TaskListContext) -> TaskCalendarResult {
+        var value = Calendar(identifier: .gregorian)
+        value.timeZone = calendar().timeZone
+        let date = calendarDate(month) ?? calendarDate(currentMonth)!
+        let interval = value.dateInterval(of: .month, for: date)!
+        let start = DayContext(date: interval.start, calendar: value).day
+        let end = DayContext(date: value.date(byAdding: .day, value: -1, to: interval.end)!, calendar: value).day
+        // Use the list's exact period/context predicates, while undated items remain reachable separately.
+        var datedContext = context
+        if context.period == .all { datedContext.period = .month; datedContext.namedMonth = start }
+        let matchingIDs = Set(taskList(in: datedContext).matches.map(\.occurrenceID))
+        var all = context
+        all.period = context.period == .completed ? .completed : .all
+        all.namedMonth = nil
+        let allMatches = taskList(in: all).matches
+        let undated = allMatches.filter { $0.plannedDay == nil && $0.periodEnd == nil }
+        let weekly = tasks.filter { task in
+            guard task.plannedDay == nil, let first = task.seriesDay, let last = task.periodEnd else { return false }
+            return first <= end && start <= last && matchingIDs.contains(task.occurrenceID)
+        }
+        let days = (0..<value.range(of: .day, in: .month, for: date)!.count).map { offset in
+            let key = DayContext(date: value.date(byAdding: .day, value: offset, to: interval.start)!, calendar: value).day
+            let inPeriod: Bool
+            switch context.period {
+            case .today: inPeriod = key == today
+            case .tomorrow: inPeriod = key == tomorrow
+            case .week:
+                let bounds = periodBounds(for: .week, at: now(), calendar: value)
+                inPeriod = bounds.start <= key && key <= bounds.end
+            default: inPeriod = true
+            }
+            return TaskCalendarDay(day: key, tasks: tasks.filter { $0.plannedDay == key && matchingIDs.contains($0.occurrenceID) }, isInPeriod: inPeriod)
+        }
+        return TaskCalendarResult(month: start, leadingDays: (value.component(.weekday, from: interval.start) + 5) % 7, days: days, undated: undated, weekly: weekly)
     }
 }
