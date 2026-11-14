@@ -195,17 +195,8 @@ public final class TaskWorkspace {
         var current = Calendar(identifier: .gregorian)
         current.timeZone = calendar().timeZone
         let date = now()
-        let end: Date
-        switch context.period {
-        case .week:
-            let offset = (current.component(.weekday, from: date) + 5) % 7
-            end = current.date(byAdding: .day, value: 6 - offset, to: date)!
-        case .month:
-            end = current.date(byAdding: .day, value: -1, to: current.dateInterval(of: .month, for: date)!.end)!
-        case .tomorrow: end = current.date(byAdding: .day, value: 1, to: date)!
-        default: end = date
-        }
-        tasks = try database.refreshOccurrences(today: today, timeZone: current.timeZone.identifier, through: DayContext(date: end, calendar: current).day)
+        let bounds = periodBounds(for: context.period, at: date, calendar: current)
+        tasks = try database.refreshOccurrences(today: today, timeZone: current.timeZone.identifier, through: bounds.end)
     }
 
     @discardableResult
@@ -651,17 +642,35 @@ public final class TaskWorkspace {
 }
 
 extension TaskWorkspace {
+    /// One calendar definition serves occurrence materialization and list filtering.
+    private func periodBounds(for period: TaskPeriod, at date: Date, calendar: Calendar) -> (start: String, end: String) {
+        let start: Date
+        let end: Date
+        switch period {
+        case .week:
+            let offset = (calendar.component(.weekday, from: date) + 5) % 7
+            start = calendar.date(byAdding: .day, value: -offset, to: date)!
+            end = calendar.date(byAdding: .day, value: 6, to: start)!
+        case .month:
+            let month = calendar.dateInterval(of: .month, for: date)!
+            start = month.start
+            end = calendar.date(byAdding: .day, value: -1, to: month.end)!
+        case .tomorrow:
+            start = calendar.date(byAdding: .day, value: 1, to: date)!
+            end = start
+        case .all, .today, .completed:
+            start = date
+            end = date
+        }
+        return (DayContext(date: start, calendar: calendar).day, DayContext(date: end, calendar: calendar).day)
+    }
+
     public func taskList(in context: TaskListContext) -> TaskListResult {
         let date = now()
         var current = Calendar(identifier: .gregorian)
         current.timeZone = calendar().timeZone
         let day = DayContext(date: date, calendar: current)
-        let monday = current.date(byAdding: .day, value: -((current.component(.weekday, from: date) + 5) % 7), to: date)!
-        let weekStart = DayContext(date: monday, calendar: current).day
-        let weekEnd = DayContext(date: current.date(byAdding: .day, value: 6, to: monday)!, calendar: current).day
-        let month = current.dateInterval(of: .month, for: date)!
-        let monthStart = DayContext(date: month.start, calendar: current).day
-        let monthEnd = DayContext(date: current.date(byAdding: .day, value: -1, to: month.end)!, calendar: current).day
+        let bounds = periodBounds(for: context.period, at: date, calendar: current)
         let source = context.period == .all ? visibleTasks : tasks
         let periodMatches = source.filter { task in
             if context.period == .completed { return task.completedAt != nil }
@@ -676,15 +685,13 @@ extension TaskWorkspace {
                 }
                 return task.plannedDay.map { task.seriesStart == nil ? $0 <= day.day : $0 == day.day } ?? false
             case .tomorrow:
-                if let end = task.periodEnd, let start = task.seriesDay, task.plannedDay == nil { return start <= tomorrow && tomorrow <= end }
-                return task.plannedDay == tomorrow
+                if let end = task.periodEnd, let start = task.seriesDay, task.plannedDay == nil { return start <= bounds.start && bounds.start <= end }
+                return task.plannedDay == bounds.start
             case .week, .month:
-                let start = context.period == .week ? weekStart : monthStart
-                let end = context.period == .week ? weekEnd : monthEnd
                 if let periodEnd = task.periodEnd, let periodStart = task.seriesDay, task.plannedDay == nil {
-                    return periodStart <= end && start <= periodEnd
+                    return periodStart <= bounds.end && bounds.start <= periodEnd
                 }
-                return task.plannedDay.map { start <= $0 && $0 <= end } ?? false
+                return task.plannedDay.map { bounds.start <= $0 && $0 <= bounds.end } ?? false
             }
         }
         let matches = periodMatches.filter { task in
