@@ -91,7 +91,7 @@ final class SQLiteDatabase {
                 guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
                 return Int(sqlite3_column_int(query, 0))
             }
-            guard version <= 12 else { throw WorkspaceError.unsupportedSchema(version) }
+            guard version <= 13 else { throw WorkspaceError.unsupportedSchema(version) }
             if version == 0 { try migrateToVersionOne() }
             if version < 2 { try migrateToVersionTwo() }
             if version < 3 { try migrateToVersionThree() }
@@ -104,6 +104,7 @@ final class SQLiteDatabase {
             if version < 10 { try migrateToVersionTen() }
             if version < 11 { try migrateToVersionEleven() }
             if version < 12 { try migrateToVersionTwelve() }
+            if version < 13 { try migrateToVersionThirteen() }
         } catch {
             sqlite3_close(connection)
             connection = nil
@@ -112,6 +113,27 @@ final class SQLiteDatabase {
     }
 
     deinit { sqlite3_close(connection) }
+
+    private func migrateToVersionThirteen() throws {
+        try transaction {
+            try execute("CREATE TABLE workspace_preferences (id INTEGER PRIMARY KEY CHECK(id = 1), value TEXT NOT NULL)")
+            try execute("PRAGMA user_version = 13")
+        }
+    }
+
+    func workspacePreferences() throws -> WorkspacePreferences {
+        try statement("SELECT value FROM workspace_preferences WHERE id = 1") { query in
+            let result = sqlite3_step(query)
+            if result == SQLITE_DONE { return WorkspacePreferences() }
+            guard result == SQLITE_ROW else { throw failure() }
+            return try JSONDecoder().decode(WorkspacePreferences.self, from: Data(text(query, 0).utf8))
+        }
+    }
+
+    func saveWorkspacePreferences(_ preferences: WorkspacePreferences) throws {
+        let value = String(decoding: try JSONEncoder().encode(preferences), as: UTF8.self)
+        try execute("INSERT INTO workspace_preferences (id, value) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET value = excluded.value", [.text(value)])
+    }
 
     private func migrateToVersionTwelve() throws {
         try transaction {
