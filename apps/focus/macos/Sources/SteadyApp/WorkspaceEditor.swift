@@ -169,7 +169,11 @@ final class WorkspaceEditor {
             restoringNavigation = true
             navigation = opened.preferences
             try opened.prepareTaskList(in: context)
-            if navigation.detailsVisible, let task = selectedTask { showDetails(for: task) }
+            if let task = selectedTask {
+                let visible = navigation.detailsVisible
+                showDetails(for: task)
+                detailsVisible = visible
+            }
             restoringNavigation = false
             timerUpdates = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.updateTimer() }
