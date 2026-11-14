@@ -11,6 +11,11 @@ enum TaskPeriod: Hashable {
 @Observable
 final class WorkspaceEditor {
     @ObservationIgnored var reopenWindow: (() -> Void)?
+    @ObservationIgnored private var timerUpdates: Timer?
+    var timerPromptVisible = false
+    var timerPromptTask: TaskRecord?
+    var timerMinutes = ""
+    var timerPromptError: String?
     var workspace: TaskWorkspace?
     var openingError: String?
     var actionError: String?
@@ -75,6 +80,9 @@ final class WorkspaceEditor {
             }
             let opened = try TaskWorkspace(databaseURL: TaskWorkspace.guestDatabaseURL(in: base))
             workspace = opened
+            timerUpdates = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateTimer() }
+            }
             draftTitle = opened.creationDraft?.title ?? ""
             draftPriority = opened.creationDraft?.priority ?? .none
             draftNote = opened.creationDraft?.note ?? .empty
@@ -441,10 +449,49 @@ final class WorkspaceEditor {
             guard saveDraft() else { return }
             isCreating = false
         }
-        let saved = workspace?.tasks.first { $0.id == owner.id } ?? owner
+        let saved = workspace?.tasks.first { $0.occurrenceID == owner.occurrenceID } ?? owner
         selectedProjectID = saved.projectID
         period = .all
         showDetails(for: saved)
+    }
+
+    func requestTimer(_ task: TaskRecord?) {
+        do {
+            if let task, try workspace?.timerDurationSeconds(taskID: task.id) != nil {
+                try workspace?.startTimer(occurrenceID: task.occurrenceID)
+                actionError = nil
+            } else {
+                timerPromptTask = task
+                timerMinutes = ""
+                timerPromptError = nil
+                timerPromptVisible = true
+            }
+        } catch { actionError = error.localizedDescription }
+    }
+
+    func confirmTimer() {
+        guard let minutes = Double(timerMinutes.replacingOccurrences(of: ",", with: ".")), minutes.isFinite, minutes > 0 else {
+            timerPromptError = "Введите длительность больше нуля в минутах."
+            return
+        }
+        guard (minutes * 60).isFinite, minutes * 60 <= TimeToolSession.maximumTimerDurationSeconds else {
+            timerPromptError = WorkspaceError.invalidTimerDuration.localizedDescription
+            return
+        }
+        do {
+            try workspace?.startTimer(occurrenceID: timerPromptTask?.occurrenceID, durationSeconds: minutes * 60)
+            timerPromptVisible = false
+            actionError = nil
+        } catch { timerPromptError = error.localizedDescription }
+    }
+
+    func adjustTimer(minutes: Int) {
+        performTimeToolAction { try workspace?.adjustTimer(minutes: minutes) }
+    }
+
+    private func updateTimer() {
+        do { try workspace?.updateTimer() }
+        catch { actionError = error.localizedDescription }
     }
 
     func startStopwatch(_ task: TaskRecord? = nil) {

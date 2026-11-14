@@ -365,7 +365,48 @@ public final class TaskWorkspace {
     }
 
     /// Reads the injected clock on demand; UI rendering never increments stored time.
-    public var elapsedSeconds: TimeInterval { activeSession?.elapsedSeconds(at: now()) ?? 0 }
+    public var elapsedSeconds: TimeInterval {
+        guard let session = activeSession else { return 0 }
+        let measured = session.elapsedSeconds(at: now())
+        return session.timerBudgetSeconds.map { min($0, measured) } ?? measured
+    }
+
+    public var remainingSeconds: TimeInterval? { activeSession?.remainingSeconds(at: now()) }
+
+    public func timerDurationSeconds(taskID: UUID) throws -> TimeInterval? {
+        try database.timerDurationSeconds(taskID: taskID)
+    }
+
+    public func startTimer(occurrenceID: UUID? = nil, durationSeconds: TimeInterval? = nil) throws {
+        try retrySessionSave()
+        try database.startTimer(occurrenceID: occurrenceID, durationSeconds: durationSeconds, at: now(), timeZone: calendar().timeZone.identifier)
+        try loadTimeTools()
+    }
+
+    public func previewTimerIncrement(minutes: Int) throws -> TimeInterval? {
+        guard (-20...20).contains(minutes) else { throw WorkspaceError.invalidTimerIncrement }
+        guard let session = activeSession, let budget = session.timerBudgetSeconds else { return nil }
+        let elapsed = session.elapsedSeconds(at: now())
+        let remaining = max(0, max(0, budget - elapsed) + Double(minutes) * 60)
+        guard (elapsed + remaining).isFinite, elapsed + remaining <= TimeToolSession.maximumTimerDurationSeconds else {
+            throw WorkspaceError.invalidTimerDuration
+        }
+        return remaining
+    }
+
+    /// Drives natural expiry; repeated notifications and Stop share one persisted transition.
+    public func updateTimer() throws {
+        guard activeSession?.kind == .timer, activeSession?.isPaused == false, !sessionNeedsSave,
+              remainingSeconds == 0 else { return }
+        let instant = now()
+        try persistSessionCommand(at: instant) { try database.changeSession(.tick, at: instant) }
+    }
+
+    public func adjustTimer(minutes: Int) throws {
+        guard (-20...20).contains(minutes) else { throw WorkspaceError.invalidTimerIncrement }
+        let instant = now()
+        try persistSessionCommand(at: instant) { try database.changeSession(.adjust(minutes), at: instant) }
+    }
 
     public func startStopwatch(occurrenceID: UUID? = nil) throws {
         try retrySessionSave()
@@ -403,7 +444,9 @@ public final class TaskWorkspace {
             try loadTimeTools()
         } catch {
             if let failure = error as? WorkspaceError, case .storage = failure, var frozen = activeSession {
-                frozen.closeSegment(at: instant)
+                if frozen.finishTimerIfNeeded(at: instant) {
+                    frozen.stoppedAt = nil // Frozen for retry; the persisted result still does not exist.
+                } else { frozen.closeSegment(at: instant) }
                 activeSession = frozen
                 pendingPausedSession = frozen
             }
