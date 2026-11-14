@@ -36,6 +36,7 @@ final class WorkspaceEditor {
     var selectedLabelID: UUID?
     var draftLabelIDs: Set<UUID> = []
     var draftLabelsWereChosen = false
+    private var draftLabelsNeedReplacement = false
     var detailLabelIDs: Set<UUID> = []
     var selectedProjectID: UUID?
     var draftProjectID: UUID?
@@ -113,9 +114,10 @@ final class WorkspaceEditor {
     func saveDraft() -> Bool {
         guard let workspace else { return false }
         do {
-            if draft != (workspace.creationDraft ?? CreationDraft()) {
-                try workspace.saveCreationDraft(draft)
+            if draftLabelsNeedReplacement || draft != (workspace.creationDraft ?? CreationDraft()) {
+                try workspace.saveCreationDraft(draft, replacingLabels: draftLabelsNeedReplacement)
             }
+            draftLabelsNeedReplacement = false
             draftError = nil
             return true
         } catch {
@@ -136,6 +138,7 @@ final class WorkspaceEditor {
             draftDayWasChosen = false
             draftLabelIDs = []
             draftLabelsWereChosen = false
+            draftLabelsNeedReplacement = false
             draftError = nil
         } catch { draftError = error.localizedDescription }
     }
@@ -153,6 +156,7 @@ final class WorkspaceEditor {
             draftDayWasChosen = false
             draftLabelIDs = []
             draftLabelsWereChosen = false
+            draftLabelsNeedReplacement = false
             draftError = nil
             isCreating = false
             showDetails(for: task)
@@ -263,6 +267,13 @@ final class WorkspaceEditor {
     func matchesContext(_ task: TaskRecord) -> Bool {
         (selectedProjectID == nil || task.projectID == selectedProjectID)
             && (selectedLabelID.map { task.labelIDs.contains($0) } ?? true)
+    }
+
+    func changeDraftLabels(_ ids: Set<UUID>) {
+        draftLabelIDs = ids
+        draftLabelsWereChosen = true
+        draftLabelsNeedReplacement = true
+        _ = saveDraft()
     }
 
     func changeLabels(_ ids: Set<UUID>) {

@@ -385,7 +385,7 @@ private struct CreationPanel: View {
             if let workspace = editor.workspace {
                 LabelField(workspace: workspace, selection: Binding(
                     get: { editor.draftLabelIDs },
-                    set: { editor.draftLabelIDs = $0; editor.draftLabelsWereChosen = true; editor.saveDraft() }
+                    set: { editor.changeDraftLabels($0) }
                 ))
             }
             PriorityField(selection: Binding(

@@ -604,10 +604,13 @@ final class SQLiteDatabase {
         }
     }
 
-    func saveCreationDraft(_ draft: CreationDraft) throws {
+    func saveCreationDraft(_ draft: CreationDraft, replacingLabels: Bool) throws {
         try transaction {
             try validateProject(draft.projectID)
             try validateLabels(draft.labelIDs)
+            // Public drafts omit deleted labels; unchanged visible IDs must retain their
+            // hidden associations unless the caller explicitly replaces the selection.
+            let labelsChanged = try replacingLabels || draft.labelIDs != labelIDs(taskID: nil)
             if draft.isEmpty {
                 try execute("DELETE FROM creation_draft")
             } else {
@@ -615,9 +618,11 @@ final class SQLiteDatabase {
                     INSERT INTO creation_draft (id, title, priority, project_id, project_was_chosen, note_rtf, note_text, planned_day, day_was_chosen, labels_were_chosen) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET title = excluded.title, priority = excluded.priority, project_id = excluded.project_id, project_was_chosen = excluded.project_was_chosen, note_rtf = excluded.note_rtf, note_text = excluded.note_text, planned_day = excluded.planned_day, day_was_chosen = excluded.day_was_chosen, labels_were_chosen = excluded.labels_were_chosen
                     """, [.text(draft.title), .text(draft.priority.rawValue), draft.projectID.map { .text($0.uuidString) } ?? .null, .number(draft.projectWasChosen ? 1 : 0), .blob(draft.note.rtf), .text(draft.note.plainText), draft.plannedDay.map { .text($0) } ?? .null, .number(draft.dayWasChosen ? 1 : 0), .number(draft.labelsWereChosen ? 1 : 0)])
-                try execute("DELETE FROM draft_labels WHERE draft_id = 1")
-                for labelID in draft.labelIDs {
-                    try execute("INSERT INTO draft_labels (draft_id, label_id) VALUES (1, ?)", [.text(labelID.uuidString)])
+                if labelsChanged {
+                    try execute("DELETE FROM draft_labels WHERE draft_id = 1")
+                    for labelID in draft.labelIDs {
+                        try execute("INSERT INTO draft_labels (draft_id, label_id) VALUES (1, ?)", [.text(labelID.uuidString)])
+                    }
                 }
             }
         }

@@ -264,9 +264,10 @@ public final class TaskWorkspace {
         return prepared
     }
 
-    public func saveCreationDraft(_ draft: CreationDraft) throws {
+    /// Set `replacingLabels` for an explicit picker choice, including an empty selection.
+    public func saveCreationDraft(_ draft: CreationDraft, replacingLabels: Bool = false) throws {
         try validateDay(draft.plannedDay)
-        try database.saveCreationDraft(draft)
+        try database.saveCreationDraft(draft, replacingLabels: replacingLabels)
         creationDraft = draft.isEmpty ? nil : draft
     }
 

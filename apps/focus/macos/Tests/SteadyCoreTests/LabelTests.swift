@@ -89,6 +89,57 @@ struct LabelTests {
     }
 
     @Test
+    func unrelatedDraftEditsKeepDeletedLabelAssociationsForUndo() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        let workspace = try TaskWorkspace(databaseURL: url)
+        let label = try workspace.createLabel(title: "Читать")
+        let project = try workspace.createProject(title: "Учёба")
+        let task = try workspace.createTask(title: "Книга", labelIDs: [label.id])
+        try workspace.setCompleted(occurrenceID: task.occurrenceID, completed: true)
+        let completed = try #require(workspace.tasks.first)
+        try workspace.saveCreationDraft(CreationDraft(title: "Черновик", labelIDs: [label.id], labelsWereChosen: true))
+        try workspace.deleteLabel(id: label.id)
+        let reopened = try TaskWorkspace(databaseURL: url)
+        let hidden = try #require(reopened.creationDraft)
+        #expect(hidden.labelIDs.isEmpty)
+        let note = TaskNote(rtf: Data([0, 128, 255]), plainText: "Новая заметка")
+        try reopened.saveCreationDraft(CreationDraft(title: "Новое название", priority: .high, projectID: project.id, projectWasChosen: true, note: note, labelIDs: hidden.labelIDs, labelsWereChosen: hidden.labelsWereChosen))
+        let edited = try TaskWorkspace(databaseURL: url)
+        #expect(edited.creationDraft?.labelIDs.isEmpty == true)
+        try edited.undoLabelDeletion()
+        let restored = try TaskWorkspace(databaseURL: url)
+        #expect(restored.creationDraft == CreationDraft(title: "Новое название", priority: .high, projectID: project.id, projectWasChosen: true, note: note, labelIDs: [label.id], labelsWereChosen: true))
+        #expect(restored.tasks == [completed])
+    }
+
+    @Test(arguments: [false, true])
+    func explicitDraftLabelReassignmentReplacesDeletedAssociations(chooseEmpty: Bool) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        let workspace = try TaskWorkspace(databaseURL: url)
+        let old = try workspace.createLabel(title: "Чтение")
+        let other = try workspace.createLabel(title: "Дом")
+        let task = try workspace.createTask(title: "Книга", labelIDs: [old.id])
+        try workspace.setCompleted(occurrenceID: task.occurrenceID, completed: true)
+        let completed = try #require(workspace.tasks.first)
+        try workspace.saveCreationDraft(CreationDraft(title: "Черновик", labelIDs: [old.id], labelsWereChosen: true))
+        try workspace.deleteLabel(id: old.id)
+        let reopened = try TaskWorkspace(databaseURL: url)
+        let selection: Set<UUID> = chooseEmpty ? [] : [other.id]
+        let reassigned = CreationDraft(title: "Черновик", labelIDs: selection, labelsWereChosen: true)
+        try reopened.saveCreationDraft(reassigned, replacingLabels: true)
+        let edited = try TaskWorkspace(databaseURL: url)
+        try edited.undoLabelDeletion()
+        let restored = try TaskWorkspace(databaseURL: url)
+        #expect(restored.creationDraft == reassigned)
+        #expect(restored.labels == [old, other])
+        #expect(restored.tasks == [completed])
+    }
+
+    @Test
     func versionFourDataKeepsRichNotesProjectChoiceAndTaskFactsAfterLabelMigration() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
