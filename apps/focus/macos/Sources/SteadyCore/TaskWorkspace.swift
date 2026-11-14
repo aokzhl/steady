@@ -343,11 +343,11 @@ public final class TaskWorkspace {
     }
 
     /// Set `replacingLabels` for an explicit picker choice, including an empty selection.
-    public func saveCreationDraft(_ draft: CreationDraft, replacingLabels: Bool = false) throws {
+    public func saveCreationDraft(_ draft: CreationDraft, replacingLabels: Bool = false, replacingChildLabels: Set<UUID> = []) throws {
         try validateDay(draft.plannedDay)
         try validateDay(draft.seriesStart)
         try draft.recurrence?.validate()
-        try database.saveCreationDraft(draft, replacingLabels: replacingLabels)
+        try database.saveCreationDraft(draft, replacingLabels: replacingLabels, replacingChildLabels: replacingChildLabels)
         creationDraft = draft.isEmpty ? nil : draft
     }
 

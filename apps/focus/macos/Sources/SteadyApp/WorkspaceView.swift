@@ -458,7 +458,7 @@ private struct CreationPanel: View {
                     DisclosureGroup(child.title.isEmpty ? "Новая подзадача" : child.title) {
                         TextField("Название подзадачи", text: Binding(get: { editor.draftChildren[index].title }, set: { editor.draftChildren[index].title = $0; editor.saveDraft() }))
                         if let workspace = editor.workspace {
-                            LabelField(workspace: workspace, selection: Binding(get: { editor.draftChildren[index].labelIDs }, set: { editor.draftChildren[index].labelIDs = $0; editor.saveDraft() }))
+                            LabelField(workspace: workspace, selection: Binding(get: { editor.draftChildren[index].labelIDs }, set: { editor.draftChildren[index].labelIDs = $0; editor.draftChildLabelsNeedReplacement.insert(child.id); editor.saveDraft() }))
                         }
                         TaskNoteEditor(note: Binding(get: { editor.draftChildren[index].note }, set: { editor.draftChildren[index].note = $0; editor.saveDraft() }), accessibilityID: "child-note-\(child.id)").frame(height: 130)
                         Button("Удалить подзадачу") { editor.draftChildren.remove(at: index); editor.saveDraft() }

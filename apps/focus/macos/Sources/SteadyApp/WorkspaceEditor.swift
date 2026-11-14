@@ -58,6 +58,7 @@ final class WorkspaceEditor {
     }
     var draftNote: TaskNote = .empty
     var detailNote: TaskNote = .empty
+    var draftChildLabelsNeedReplacement: Set<UUID> = []
     var draftChildren: [SubtaskDraft] = []
     var newChildTitle = ""
     var expandedParents: Set<UUID> = []
@@ -134,9 +135,10 @@ final class WorkspaceEditor {
     func saveDraft() -> Bool {
         guard let workspace else { return false }
         do {
-            if draftLabelsNeedReplacement || draft != (workspace.creationDraft ?? CreationDraft()) {
-                try workspace.saveCreationDraft(draft, replacingLabels: draftLabelsNeedReplacement)
+            if draftLabelsNeedReplacement || !draftChildLabelsNeedReplacement.isEmpty || draft != (workspace.creationDraft ?? CreationDraft()) {
+                try workspace.saveCreationDraft(draft, replacingLabels: draftLabelsNeedReplacement, replacingChildLabels: draftChildLabelsNeedReplacement)
             }
+            draftChildLabelsNeedReplacement = []
             draftLabelsNeedReplacement = false
             draftError = nil
             return true
@@ -159,6 +161,7 @@ final class WorkspaceEditor {
             draftDayWasChosen = false
             draftLabelIDs = []
             draftLabelsWereChosen = false
+            draftChildLabelsNeedReplacement = []
             draftLabelsNeedReplacement = false
             draftRecurrence = nil
             draftSeriesStart = nil
@@ -180,6 +183,7 @@ final class WorkspaceEditor {
             draftDayWasChosen = false
             draftLabelIDs = []
             draftLabelsWereChosen = false
+            draftChildLabelsNeedReplacement = []
             draftLabelsNeedReplacement = false
             draftRecurrence = nil
             draftSeriesStart = nil
@@ -343,6 +347,7 @@ final class WorkspaceEditor {
     }
 
     private func synchronizeLabelSelection() {
+        draftChildren = workspace?.creationDraft?.children ?? []
         draftLabelIDs = workspace?.creationDraft?.labelIDs ?? []
         detailLabelIDs = selectedTask?.labelIDs ?? []
         labelsError = nil
