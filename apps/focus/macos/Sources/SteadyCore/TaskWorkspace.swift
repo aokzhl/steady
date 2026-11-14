@@ -36,7 +36,7 @@ public struct ProjectRecord: Identifiable, Equatable, Sendable {
     public let color: ProjectColor?
 }
 
-/// Durable rich text is opaque to Core; the projection supports display and future search.
+/// Durable rich text is opaque to Core; the projection supports display and search.
 /// The macOS editor encodes `rtf` using the standard RTF interchange format.
 public struct TaskNote: Equatable, Sendable, Codable {
     public let rtf: Data
@@ -665,7 +665,8 @@ extension TaskWorkspace {
         return (DayContext(date: start, calendar: calendar).day, DayContext(date: end, calendar: calendar).day)
     }
 
-    public func taskList(in context: TaskListContext) -> TaskListResult {
+    public func taskList(in context: TaskListContext, searchQuery: String = "") -> TaskListResult {
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let date = now()
         var current = Calendar(identifier: .gregorian)
         current.timeZone = calendar().timeZone
@@ -696,6 +697,7 @@ extension TaskWorkspace {
         }
         let matches = periodMatches.filter { task in
             guard context.projectID == nil || task.projectID == context.projectID else { return false }
+            guard query.isEmpty || task.title.localizedCaseInsensitiveContains(query) || task.note.plainText.localizedCaseInsensitiveContains(query) else { return false }
             return context.labelIDs.isEmpty || (context.labelMatch == .any ? !task.labelIDs.isDisjoint(with: context.labelIDs) : context.labelIDs.isSubset(of: task.labelIDs))
         }
         let matchIDs = Set(matches.map(\.occurrenceID))
@@ -730,7 +732,7 @@ extension TaskWorkspace {
         }
         let unassigned = rest.filter { $0.projectID == nil }
         if !unassigned.isEmpty { groups.append(TaskListGroup(id: "unassigned", title: "Без проекта", roots: unassigned, matchCount: count(unassigned))) }
-        let empty: TaskListEmptyReason? = matches.isEmpty ? (tasks.isEmpty ? .emptyDatabase : periodMatches.isEmpty ? .emptyPeriod : .noMatches) : nil
+        let empty: TaskListEmptyReason? = matches.isEmpty ? (tasks.isEmpty ? .emptyDatabase : !query.isEmpty ? .noSearchMatches : periodMatches.isEmpty ? .emptyPeriod : .noMatches) : nil
         return TaskListResult(matches: matches, roots: roots, contextParentIDs: contextParents, groups: groups, emptyReason: empty)
     }
 }

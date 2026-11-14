@@ -39,7 +39,51 @@ final class WorkspaceEditor {
         get { navigation.screen }
         set { navigation.screen = newValue }
     }
-    var listResult: TaskListResult? { workspace?.taskList(in: context) }
+    var searchQuery = ""
+    private var searchOrigin: WorkspacePreferences?
+    private var searchOriginWasCreating = false
+    var isSearching: Bool { searchOrigin != nil }
+    var searchAllTasks: Bool { isSearching && context == TaskListContext(period: .all, showCompleted: true) }
+    var listResult: TaskListResult? { workspace?.taskList(in: context, searchQuery: searchQuery) }
+
+    @discardableResult
+    func beginSearch() -> Bool {
+        if isSearching { return true }
+        guard saveDetails(), !isCreating || saveDraft() else { return false }
+        searchOrigin = navigation
+        searchOriginWasCreating = isCreating
+        isCreating = false
+        screen = .tasks
+        return true
+    }
+
+    func searchEverywhere() {
+        guard isSearching else { return }
+        context = TaskListContext(period: .all, showCompleted: true)
+        reload()
+    }
+
+    func searchEscape() {
+        if !searchQuery.isEmpty { searchQuery = "" }
+        else { endSearch() }
+    }
+
+    @discardableResult
+    func endSearch() -> Bool {
+        guard let origin = searchOrigin else { return true }
+        guard saveDetails(), !isCreating || saveDraft() else { return false }
+        searchOrigin = nil
+        searchQuery = ""
+        navigation = origin
+        isCreating = searchOriginWasCreating
+        if let task = selectedTask {
+            let visible = detailsVisible
+            showDetails(for: task)
+            detailsVisible = visible
+        }
+        reload()
+        return true
+    }
     var contextTitle: String {
         let project = workspace?.projects.first { $0.id == selectedProjectID }?.title
         let labels = workspace?.labels.filter { context.labelIDs.contains($0.id) }.map(\.title) ?? []
@@ -49,7 +93,7 @@ final class WorkspaceEditor {
     @discardableResult
     func saveNavigation() -> Bool {
         guard let workspace else { return true }
-        do { try workspace.savePreferences(navigation); return true }
+        do { try workspace.savePreferences(searchOrigin ?? navigation); return true }
         catch { actionError = error.localizedDescription; return false }
     }
     var draftDay: String?
@@ -326,6 +370,7 @@ final class WorkspaceEditor {
     }
 
     func selectProject(_ id: UUID?) {
+        guard endSearch() else { return }
         guard saveDetails() else { return }
         if isCreating { closeCreation() }
         selectedProjectID = id
@@ -335,6 +380,7 @@ final class WorkspaceEditor {
     }
 
     func selectLabel(_ id: UUID) {
+        guard endSearch() else { return }
         guard saveDetails() else { return }
         if isCreating { closeCreation() }
         if !context.labelIDs.insert(id).inserted { context.labelIDs.remove(id) }
@@ -496,6 +542,7 @@ final class WorkspaceEditor {
     }
 
     func openReport() {
+        guard endSearch() else { return }
         guard saveDetails() else { return }
         if isCreating { closeCreation() }
         context.projectID = nil
