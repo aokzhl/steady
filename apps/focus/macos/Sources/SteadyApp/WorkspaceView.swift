@@ -44,6 +44,7 @@ struct WorkspaceView: View {
             if phase == .active { reload() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in reload() }
+        .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in reload() }
     }
 
     private var header: some View {
@@ -124,10 +125,8 @@ struct WorkspaceView: View {
                 }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
-                        let open = workspace.tasks.filter { $0.completedAt == nil && $0.plannedDay <= workspace.today }
-                        let completed = workspace.tasks.filter {
-                            $0.completedAt.map { Calendar.current.isDateInToday($0) } ?? false
-                        }
+                        let open = workspace.openToday
+                        let completed = workspace.completedToday
                         if open.isEmpty, completed.isEmpty {
                             emptyState
                         } else {

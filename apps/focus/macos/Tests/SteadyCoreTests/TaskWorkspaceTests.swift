@@ -1,9 +1,69 @@
 import Foundation
+import Observation
 import SteadyCore
 import Testing
 
 @MainActor
 struct TaskWorkspaceTests {
+    @Test
+    func completedGroupRefreshesWhenTimeZoneChangesWithinTheSameDay() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var instant = try Date("2026-11-14T01:00:00Z", strategy: .iso8601)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+        let workspace = try TaskWorkspace(databaseURL: directory.appendingPathComponent("steady.sqlite"), now: { instant }, calendar: { calendar })
+        let task = try workspace.createTask(title: "Уже выполнено")
+        try workspace.setCompleted(occurrenceID: task.occurrenceID, completed: true)
+        #expect(workspace.completedToday.count == 1)
+        instant = try Date("2026-11-14T23:30:00Z", strategy: .iso8601)
+        try await confirmation("Изменение зоны обновляет группу даже при той же дате") { notified in
+            withObservationTracking { _ = workspace.completedToday } onChange: { notified() }
+            calendar.timeZone = try #require(TimeZone(identifier: "America/New_York"))
+            try workspace.reload()
+            #expect(workspace.today == "2026-11-14")
+            #expect(workspace.completedToday.isEmpty)
+        }
+        #expect(workspace.tasks.count == 1)
+        #expect(workspace.tasks.first?.completedAt != nil)
+    }
+
+    @Test
+    func midnightRefreshNotifiesObserversEvenWhenTasksAreUnchanged() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var instant = try Date("2026-11-14T23:30:00Z", strategy: .iso8601)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+        let workspace = try TaskWorkspace(databaseURL: directory.appendingPathComponent("steady.sqlite"), now: { instant }, calendar: { calendar })
+        try workspace.createTask(title: "Задача на четырнадцатое")
+        try await confirmation("Сегодня обновляет интерфейс после полуночи") { notified in
+            withObservationTracking { _ = workspace.today } onChange: { notified() }
+            instant = instant.addingTimeInterval(3600)
+            try workspace.reload()
+            #expect(workspace.today == "2026-11-15")
+        }
+        #expect(workspace.tasks.first?.plannedDay == "2026-11-14")
+    }
+
+    @Test
+    func newTasksUseTheCurrentTimeZoneAfterItChanges() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let instant = try Date("2026-11-14T23:30:00Z", strategy: .iso8601)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+        let workspace = try TaskWorkspace(databaseURL: directory.appendingPathComponent("steady.sqlite"), now: { instant }, calendar: { calendar })
+        let before = try workspace.createTask(title: "До смены зоны")
+        calendar.timeZone = try #require(TimeZone(identifier: "Asia/Almaty"))
+        try workspace.reload()
+        let after = try workspace.createTask(title: "После смены зоны")
+        #expect(workspace.today == "2026-11-15")
+        #expect(after.plannedDay == "2026-11-15")
+        #expect(after.timeZoneIdentifier == "Asia/Almaty")
+        #expect(workspace.tasks.first == before)
+    }
+
     @Test
     func newerSchemaIsRefusedWithoutChangingExistingData() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -44,7 +104,7 @@ struct TaskWorkspaceTests {
         let instant = try Date("2026-11-14T23:30:00Z", strategy: .iso8601)
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try #require(TimeZone(identifier: "Asia/Almaty"))
-        let workspace = try TaskWorkspace(databaseURL: url, now: { instant }, calendar: calendar)
+        let workspace = try TaskWorkspace(databaseURL: url, now: { instant }, calendar: { calendar })
         let first = try workspace.createTask(title: "  Коран: 'чтение' 📖  ")
         let second = try workspace.createTask(title: "Коран: 'чтение' 📖")
 
