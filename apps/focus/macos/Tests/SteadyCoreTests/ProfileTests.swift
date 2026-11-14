@@ -44,7 +44,7 @@ struct ProfileTests {
         #expect(final.timeToolResults.map(\.durationSeconds) == [30, 60])
         #expect(final.pomodoroProfiles.first { $0.id == profile.id }?.parameters == PomodoroParameters())
     }
-    @Test func genuineVersionTwelveDraftChildrenAndSavedSnapshotSurviveMigration() throws {
+    @Test(arguments: [12, 13]) func legacyDraftChildrenAndSessionSnapshotsSurviveProfileMigration(version: Int) throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -102,6 +102,18 @@ struct ProfileTests {
             PRAGMA user_version = 12;
 
             """]
+        if version == 13 {
+            let legacy = try #require(fixture.arguments?.last)
+            fixture.arguments = [url.path, legacy + """
+                CREATE TABLE workspace_preferences (id INTEGER PRIMARY KEY CHECK(id = 1), value TEXT NOT NULL);
+                INSERT INTO workspace_preferences VALUES (1, '{"context":{"projectID":"33333333-3333-3333-3333-333333333333","labelIDs":["66666666-6666-6666-6666-666666666666"],"labelMatch":"all","period":"month","showCompleted":true},"screen":"tasks","selectedOccurrenceID":"ABABABAB-ABAB-ABAB-ABAB-ABABABABABAB","detailsVisible":true,"sidebarVisible":false,"expandedParentIDs":["22222222-2222-2222-2222-222222222222"]}');
+                INSERT INTO tasks (id, title, created_at, priority, note_rtf, note_text, parent_task_id) VALUES ('ACACACAC-ACAC-ACAC-ACAC-ACACACACACAC', 'Дочерний фокус', 1, 'none', X'', 'Своя заметка', '11111111-1111-1111-1111-111111111111');
+                INSERT INTO task_occurrences (id, task_id, time_zone, parent_occurrence_id) VALUES ('ABABABAB-ABAB-ABAB-ABAB-ABABABABABAB', 'ACACACAC-ACAC-ACAC-ACAC-ACACACACACAC', 'Asia/Almaty', '22222222-2222-2222-2222-222222222222');
+                UPDATE time_tool_runs SET task_id = 'ACACACAC-ACAC-ACAC-ACAC-ACACACACACAC', occurrence_id = 'ABABABAB-ABAB-ABAB-ABAB-ABABABABABAB', owner_title = 'Дочерний фокус' WHERE id = 'EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE';
+                UPDATE time_tool_segments SET ended_at = 1794564130 WHERE run_id = 'EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE';
+                PRAGMA user_version = 13;
+                """]
+        }
         try fixture.run()
         fixture.waitUntilExit()
         try #require(fixture.terminationStatus == 0)
@@ -110,8 +122,19 @@ struct ProfileTests {
         #expect(workspace.activeSession?.id == UUID(uuidString: "EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE"))
         #expect(workspace.activeSession?.isPaused == true)
         #expect(workspace.activeSession?.pomodoro?.parameters == PomodoroParameters())
-        #expect(workspace.elapsedSeconds == 0)
+        #expect(workspace.elapsedSeconds == (version == 13 ? 30 : 0))
+        if version == 13 {
+            #expect(workspace.activeSession?.taskID == UUID(uuidString: "ACACACAC-ACAC-ACAC-ACAC-ACACACACACAC"))
+            #expect(workspace.preferences.context.period == .month)
+            #expect(workspace.preferences.context.labelMatch == .all)
+            #expect(workspace.preferences.context.showCompleted)
+            #expect(workspace.preferences.context.projectID == UUID(uuidString: "33333333-3333-3333-3333-333333333333"))
+            #expect(workspace.preferences.context.labelIDs == Set([UUID(uuidString: "66666666-6666-6666-6666-666666666666")!]))
+            #expect(workspace.preferences.selectedOccurrenceID == workspace.activeSession?.occurrenceID)
+            #expect(workspace.preferences.detailsVisible && !workspace.preferences.sidebarVisible)
+        }
         let draft = try #require(workspace.creationDraft)
+        #expect(draft.pomodoroParameters == nil)
         #expect(draft.projectWasChosen && draft.dayWasChosen && draft.labelsWereChosen)
         #expect(draft.note == TaskNote(rtf: Data([0, 254]), plainText: "Текст"))
         #expect(draft.children.first?.id == UUID(uuidString: "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC"))
@@ -125,5 +148,6 @@ struct ProfileTests {
         #expect(reopened.tasks.contains { $0.id == UUID(uuidString: "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC") })
         #expect(reopened.timeToolResults == workspace.timeToolResults)
         #expect(reopened.activeSession == workspace.activeSession)
+        #expect(reopened.preferences == workspace.preferences)
     }
 }
