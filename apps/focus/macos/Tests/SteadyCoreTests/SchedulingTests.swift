@@ -149,7 +149,35 @@ struct SchedulingTests {
         #expect(reopened.creationDraft == workspace.creationDraft)
     }
 
-    @Test func creationUsesTheDayContextUntilTheUserExplicitlyChoosesADayOrNoDate() throws {
+    @Test(arguments: ["2026-11-15", nil] as [String?])
+    func reopeningAnEnteredDraftPreservesItsImplicitDayAcrossContexts(contextDay: String?) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        let workspace = try TaskWorkspace(databaseURL: url)
+        let initial = try workspace.prepareCreationDraft(plannedDay: "2026-11-14")
+        try workspace.saveCreationDraft(CreationDraft(title: "Продолжить позже", plannedDay: initial.plannedDay))
+        let reopened = try TaskWorkspace(databaseURL: url)
+        let prepared = try reopened.prepareCreationDraft(plannedDay: contextDay)
+        #expect(prepared.plannedDay == "2026-11-14")
+        #expect(prepared.dayWasChosen == false)
+        #expect(try TaskWorkspace(databaseURL: url).creationDraft == prepared)
+        #expect(try reopened.createTaskFromDraft().plannedDay == "2026-11-14")
+    }
+
+    @Test func reopeningAnEnteredUndatedDraftDoesNotAssignTheNewDailyContext() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        let workspace = try TaskWorkspace(databaseURL: url)
+        try workspace.saveCreationDraft(CreationDraft(title: "Когда-нибудь"))
+        let reopened = try TaskWorkspace(databaseURL: url)
+        let prepared = try reopened.prepareCreationDraft(plannedDay: "2026-11-15")
+        #expect(prepared.plannedDay == nil)
+        #expect(try TaskWorkspace(databaseURL: url).creationDraft == prepared)
+    }
+
+    @Test func untouchedCreationUsesContextAndExplicitDayOrNoDateChoicesAreRetained() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("steady.sqlite")
@@ -158,7 +186,7 @@ struct SchedulingTests {
         #expect(workspace.creationDraft?.plannedDay == "2026-11-14")
         try workspace.prepareCreationDraft()
         #expect(workspace.creationDraft == nil)
-        try workspace.saveCreationDraft(CreationDraft(title: "Без даты явно", dayWasChosen: true))
+        try workspace.saveCreationDraft(CreationDraft(dayWasChosen: true))
         let reopened = try TaskWorkspace(databaseURL: url)
         try reopened.prepareCreationDraft(plannedDay: "2026-11-15")
         #expect(reopened.creationDraft?.plannedDay == nil)

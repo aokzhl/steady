@@ -139,9 +139,9 @@ struct WorkspaceView: View {
                     .font(.system(size: 12)).foregroundStyle(.secondary)
             }
             Picker("Период", selection: Binding(get: { editor.period }, set: { editor.selectPeriod($0) })) {
-                Text("Все").tag(0)
-                Text("Сегодня").tag(1)
-                Text("Завтра").tag(2)
+                Text("Все").tag(TaskPeriod.all)
+                Text("Сегодня").tag(TaskPeriod.today)
+                Text("Завтра").tag(TaskPeriod.tomorrow)
             }
             .pickerStyle(.segmented).frame(maxWidth: 300)
 
@@ -169,16 +169,16 @@ struct WorkspaceView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         let open = workspace.tasks.filter {
                             $0.completedAt == nil && (editor.selectedProjectID == nil || $0.projectID == editor.selectedProjectID)
-                            && (editor.contextDay == nil || $0.plannedDay == editor.contextDay || (editor.period == 1 && $0.plannedDay.map { $0 < workspace.today } == true))
+                            && (editor.contextDay == nil || $0.plannedDay == editor.contextDay || (editor.period == .today && $0.plannedDay.map { $0 < workspace.today } == true))
                         }
                         let completed = workspace.tasks.filter {
                             $0.completedAt != nil && (editor.selectedProjectID == nil || $0.projectID == editor.selectedProjectID)
-                            && (editor.contextDay == nil || (editor.period == 1 ? workspace.completedToday.contains($0) : $0.plannedDay == editor.contextDay))
+                            && (editor.contextDay == nil || (editor.period == .today ? workspace.completedToday.contains($0) : $0.plannedDay == editor.contextDay))
                         }
                         if open.isEmpty, completed.isEmpty {
                             emptyState
                         } else {
-                            let overdue = editor.period == 1 ? open.filter { $0.plannedDay.map { $0 < workspace.today } == true } : []
+                            let overdue = editor.period == .today ? open.filter { $0.plannedDay.map { $0 < workspace.today } == true } : []
                             if !overdue.isEmpty {
                                 sectionLabel("Ранее запланировано", count: overdue.count)
                                 ForEach(overdue) { taskRow($0) }
@@ -199,7 +199,7 @@ struct WorkspaceView: View {
                                 }
                             }
                             if !completed.isEmpty {
-                                sectionLabel(editor.period == 1 ? "Выполнено сегодня" : "Выполнено", count: completed.count)
+                                sectionLabel(editor.period == .today ? "Выполнено сегодня" : "Выполнено", count: completed.count)
                                     .padding(.top, 16)
                                 ForEach(completed) { taskRow($0) }
                             }

@@ -2,6 +2,10 @@ import AppKit
 import Observation
 import SteadyCore
 
+enum TaskPeriod: Hashable {
+    case all, today, tomorrow
+}
+
 /// Window editing state outlives its panels, including unsaved input after a disk error.
 @MainActor
 @Observable
@@ -16,12 +20,18 @@ final class WorkspaceEditor {
     private var projectError: String?
     private var noteError: String?
     private var dayError: String?
-    var period = 1
+    var period: TaskPeriod = .today
     var draftDay: String?
     var draftDayWasChosen = false
     var detailDay: String?
 
-    var contextDay: String? { period == 1 ? workspace?.today : period == 2 ? workspace?.tomorrow : nil }
+    var contextDay: String? {
+        switch period {
+        case .all: nil
+        case .today: workspace?.today
+        case .tomorrow: workspace?.tomorrow
+        }
+    }
     var selectedProjectID: UUID?
     var draftProjectID: UUID?
     var draftProjectWasChosen = false
@@ -262,7 +272,7 @@ final class WorkspaceEditor {
         }
     }
 
-    func selectPeriod(_ value: Int) {
+    func selectPeriod(_ value: TaskPeriod) {
         guard saveDetails() else { return }
         if isCreating { closeCreation() }
         period = value

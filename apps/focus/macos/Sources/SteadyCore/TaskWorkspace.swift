@@ -185,15 +185,17 @@ public final class TaskWorkspace {
         tasks = try database.setNote(id: id, note: note)
     }
 
-    /// Apply the current creation context while retaining explicit choices, including “Без даты”.
+    /// Seed an untouched form from context; resume an entered draft without changing its day.
     @discardableResult
     public func prepareCreationDraft(projectID: UUID? = nil, plannedDay: String? = nil) throws -> CreationDraft {
         let saved = creationDraft ?? CreationDraft()
+        let hasSavedInput = !saved.title.isEmpty || saved.priority != .none || saved.projectID != nil
+            || saved.projectWasChosen || saved.note != .empty || saved.dayWasChosen
         let prepared = CreationDraft(
             title: saved.title, priority: saved.priority,
             projectID: creationDraft != nil ? saved.projectID : projectID,
             projectWasChosen: saved.projectWasChosen,
-            plannedDay: saved.dayWasChosen ? saved.plannedDay : plannedDay,
+            plannedDay: hasSavedInput ? saved.plannedDay : plannedDay,
             dayWasChosen: saved.dayWasChosen, note: saved.note
         )
         try saveCreationDraft(prepared)
