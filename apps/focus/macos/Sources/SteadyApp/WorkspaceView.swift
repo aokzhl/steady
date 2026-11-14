@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SteadyCore
 import SwiftUI
@@ -1002,10 +1003,10 @@ private struct MorePeriods: View {
     let selected: TaskPeriod
     let select: (TaskPeriod) -> Void
     @State private var expanded = false
-    @FocusState private var focused: TaskPeriod?
+    @State private var keyboardSelection: TaskPeriod = .week
 
     var body: some View {
-        Button { expanded.toggle() } label: {
+        Button { expanded = true } label: {
             Text(selected == .week || selected == .month ? "Ещё · " + selected.label : "Ещё")
                 .font(.system(size: 12)).padding(.horizontal, 10).padding(.vertical, 7)
                 .background(selected == .week || selected == .month ? Palette.accent.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 7))
@@ -1026,21 +1027,72 @@ private struct MorePeriods: View {
                             Text(period.label)
                             Spacer()
                             if selected == period { Image(systemName: "checkmark") }
-                        }.frame(width: 170, alignment: .leading)
+                        }
+                        .frame(width: 170, alignment: .leading)
+                        .padding(5)
+                        .background(keyboardSelection == period ? Palette.accent.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 5))
                     }
-                    .focused($focused, equals: period)
                 }
             }
             .padding(12)
-            .onAppear { focused = selected == .month ? .month : .week }
-            .onKeyPress(.downArrow) { focused = .month; return .handled }
-            .onKeyPress(.upArrow) { focused = .week; return .handled }
-            .onKeyPress(.return) {
-                select(focused ?? .week)
-                expanded = false
-                return .handled
-            }
-            .onKeyPress(.escape) { expanded = false; return .handled }
+            .onAppear { keyboardSelection = selected == .month ? .month : .week }
+            .background(PeriodMenuKeyboardFocus(
+                move: { keyboardSelection = $0 > 0 ? .month : .week },
+                apply: {
+                    select(keyboardSelection)
+                    expanded = false
+                },
+                dismiss: { expanded = false }
+            ))
+        }
+    }
+}
+
+/// Owns the popover's responder while it is visible, independent of macOS's button-navigation preference.
+/// This view receives its own key events; it installs no window or application event monitor.
+private struct PeriodMenuKeyboardFocus: NSViewRepresentable {
+    let move: (Int) -> Void
+    let apply: () -> Void
+    let dismiss: () -> Void
+
+    func makeNSView(context: Context) -> PeriodMenuKeyboardView { PeriodMenuKeyboardView() }
+
+    func updateNSView(_ view: PeriodMenuKeyboardView, context: Context) {
+        view.move = move
+        view.apply = apply
+        view.dismiss = dismiss
+    }
+}
+
+private final class PeriodMenuKeyboardView: NSView {
+    var move: ((Int) -> Void)?
+    var apply: (() -> Void)?
+    var dismiss: (() -> Void)?
+    override var acceptsFirstResponder: Bool { true }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // SwiftUI attaches the popover before finishing its responder setup.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window else { return }
+            window.makeKey()
+            window.makeFirstResponder(self)
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func keyDown(with event: NSEvent) {
+        guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty else {
+            super.keyDown(with: event)
+            return
+        }
+        switch event.keyCode {
+        case 125: move?(1)
+        case 126: move?(-1)
+        case 36, 76: apply?()
+        case 53: dismiss?()
+        default: super.keyDown(with: event)
         }
     }
 }
