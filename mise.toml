@@ -1,0 +1,18 @@
+[env]
+STEADY_SWIFT_VERSION = "6.2.3"
+
+[tasks.test]
+description = "Test the native application's public behavior with real SQLite"
+run = "bash tooling/macos.sh test"
+
+[tasks.check]
+description = "Build and typecheck with warnings treated as errors"
+run = "bash tooling/macos.sh check"
+
+[tasks.build]
+description = "Build a locally signed Steady.app"
+run = "bash tooling/macos.sh build"
+
+[tasks.run]
+description = "Build and launch the native Steady application"
+run = "bash tooling/macos.sh run"

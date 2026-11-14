@@ -1,0 +1,7 @@
+.DS_Store
+**/.build/
+**/.swiftpm/
+**/xcuserdata/
+.worktrees/
+/.codex/config.toml
+/.playwright-mcp/

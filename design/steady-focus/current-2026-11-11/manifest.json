@@ -1,0 +1,25 @@
+{
+  "observed_on": "2026-11-11",
+  "status": "current-user-design-export",
+  "project_id": "steady-focus-macos-design",
+  "entry": "steady-tasks-projects-refined.html",
+  "source": "Open Design MCP get_artifact; screenshots from browser inspection",
+  "older_accepted_snapshot": "../baseline-2026-11-07/manifest.json",
+  "files": [
+    {
+      "path": "create.jpg",
+      "bytes": 106568,
+      "sha256": "ee0fdbfd6153ebff2727e5a0d631027c550158afe9e9305d6cad738594327b69"
+    },
+    {
+      "path": "list.jpg",
+      "bytes": 88857,
+      "sha256": "bcc21c79d35368d3b1e28c9862a6c56a9b1109bc77157b5cdd7eb387f6b3233f"
+    },
+    {
+      "path": "steady-tasks-projects-refined.html",
+      "bytes": 279447,
+      "sha256": "03d722aa88aa8f03e2ce1374abca59719a0710a642bdfa0eb12fbc3655772dd9"
+    }
+  ]
+}

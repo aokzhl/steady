@@ -1,0 +1,649 @@
+{
+  "repository": "aokzhl/steady",
+  "parent_number": 1,
+  "parent_url": "https://github.com/aokzhl/steady/issues/1",
+  "parent_body_sha256": "6ba702000242d51350f98222e200c7dcfab0f659a0be57c8f52196113cf1d1f2",
+  "parent_state": "open",
+  "relationship_mode": "native-github-sub-issues-and-dependencies",
+  "status": "verified",
+  "tickets": {
+    "1": {
+      "plan_id": 1,
+      "number": 2,
+      "title": "[MVP 01] Первый запуск: создать и выполнить задачу с сохранением",
+      "url": "https://github.com/aokzhl/steady/issues/2",
+      "status": "published",
+      "database_id": 6386253384,
+      "body_sha256": "ea17adf222ff331265e50a88ca1b7528e4a0905e4ad455d2b792aca85a224bf5",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [],
+      "blocked_by_issue_numbers": [],
+      "native_dependencies_set": true
+    },
+    "2": {
+      "plan_id": 2,
+      "number": 3,
+      "title": "[MVP 02] Создание и детали: редактирование, черновик и приоритет",
+      "url": "https://github.com/aokzhl/steady/issues/3",
+      "status": "published",
+      "database_id": 6386254716,
+      "body_sha256": "f018f26ee22b16f64680b335635f6c95c4ad0104f91915ae05b83e2837d74833",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        1
+      ],
+      "blocked_by_issue_numbers": [
+        2
+      ],
+      "native_dependencies_set": true
+    },
+    "3": {
+      "plan_id": 3,
+      "number": 4,
+      "title": "[MVP 03] Обычные проекты: создать, переименовать и назначить задаче",
+      "url": "https://github.com/aokzhl/steady/issues/4",
+      "status": "published",
+      "database_id": 6386256171,
+      "body_sha256": "da98360af7cf83dfc18ac4fab59d0a73162e4e581bc6f109f6544bafb1552fc8",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        2
+      ],
+      "blocked_by_issue_numbers": [
+        3
+      ],
+      "native_dependencies_set": true
+    },
+    "4": {
+      "plan_id": 4,
+      "number": 5,
+      "title": "[MVP 04] Глобальные метки: назначение, переименование и удаление",
+      "url": "https://github.com/aokzhl/steady/issues/5",
+      "status": "published",
+      "database_id": 6386257634,
+      "body_sha256": "2bd56e47112194f42e54f8aa75dd8bbce6b31eeb10814d3df12b6c21e012a044",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        2
+      ],
+      "blocked_by_issue_numbers": [
+        3
+      ],
+      "native_dependencies_set": true
+    },
+    "5": {
+      "plan_id": 5,
+      "number": 6,
+      "title": "[MVP 05] Note: форматирование и надёжное локальное автосохранение",
+      "url": "https://github.com/aokzhl/steady/issues/6",
+      "status": "published",
+      "database_id": 6386259334,
+      "body_sha256": "78fe701fbe76e5938a0b52422710c604ed01eb47f33bf83fd8f8175eee6a6660",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        2
+      ],
+      "blocked_by_issue_numbers": [
+        3
+      ],
+      "native_dependencies_set": true
+    },
+    "6": {
+      "plan_id": 6,
+      "number": 7,
+      "title": "[MVP 06] Разовые дела: день, Без даты и просроченные",
+      "url": "https://github.com/aokzhl/steady/issues/7",
+      "status": "published",
+      "database_id": 6386260647,
+      "body_sha256": "2ab2d61b91c2e426f72106b88cd2119c9dd01047bb8baa93c4e06480fc351998",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        2
+      ],
+      "blocked_by_issue_numbers": [
+        3
+      ],
+      "native_dependencies_set": true
+    },
+    "7": {
+      "plan_id": 7,
+      "number": 8,
+      "title": "[MVP 07] Повторы по дням: независимые выполнения и изменение серии",
+      "url": "https://github.com/aokzhl/steady/issues/8",
+      "status": "published",
+      "database_id": 6386261973,
+      "body_sha256": "f657031cdb3918084c6b225c37532f5c5a18bc4156be57146bf97965a1a20b56",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        6
+      ],
+      "blocked_by_issue_numbers": [
+        7
+      ],
+      "native_dependencies_set": true
+    },
+    "8": {
+      "plan_id": 8,
+      "number": 9,
+      "title": "[MVP 08] Раз в неделю в любой день: одно выполнение на период",
+      "url": "https://github.com/aokzhl/steady/issues/9",
+      "status": "published",
+      "database_id": 6386263245,
+      "body_sha256": "cc2deb5a04805552cfb8acb54646f3f7b19cd702a289ac286ee227a21bfcb86b",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        7
+      ],
+      "blocked_by_issue_numbers": [
+        8
+      ],
+      "native_dependencies_set": true
+    },
+    "9": {
+      "plan_id": 9,
+      "number": 10,
+      "title": "[MVP 09] Один уровень подзадач с независимым выполнением",
+      "url": "https://github.com/aokzhl/steady/issues/10",
+      "status": "published",
+      "database_id": 6386264681,
+      "body_sha256": "31328509965fd81b25d9539fb27eeb66d151317df29497944b298fd98e959d0a",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        3,
+        4,
+        5,
+        8
+      ],
+      "blocked_by_issue_numbers": [
+        4,
+        5,
+        6,
+        9
+      ],
+      "native_dependencies_set": true
+    },
+    "10": {
+      "plan_id": 10,
+      "number": 11,
+      "title": "[MVP 10] Общий список: проекты, метки, периоды и восстановление контекста",
+      "url": "https://github.com/aokzhl/steady/issues/11",
+      "status": "published",
+      "database_id": 6386266468,
+      "body_sha256": "c833b4a0272ab01f4214d768d1ba45626c04a0cf4a6682cb236787c30d74e61e",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        9
+      ],
+      "blocked_by_issue_numbers": [
+        10
+      ],
+      "native_dependencies_set": true
+    },
+    "11": {
+      "plan_id": 11,
+      "number": 12,
+      "title": "[MVP 11] Поиск по названию и note с переходом ко всем задачам",
+      "url": "https://github.com/aokzhl/steady/issues/12",
+      "status": "published",
+      "database_id": 6386267901,
+      "body_sha256": "e68e656f18228eb9578acc0629161058c81014fde39928b92bfc70ac180ce586",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        10
+      ],
+      "blocked_by_issue_numbers": [
+        11
+      ],
+      "native_dependencies_set": true
+    },
+    "12": {
+      "plan_id": 12,
+      "number": 13,
+      "title": "[MVP 12] Месячный календарь тех же выполнений",
+      "url": "https://github.com/aokzhl/steady/issues/13",
+      "status": "published",
+      "database_id": 6386269422,
+      "body_sha256": "e57b1c31ecdccc6261a2f13ccbaf008d7bca581872ccb6d41ecd0a5bbd497e84",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        10
+      ],
+      "blocked_by_issue_numbers": [
+        11
+      ],
+      "native_dependencies_set": true
+    },
+    "13": {
+      "plan_id": 13,
+      "number": 14,
+      "title": "[MVP 13] Перенос одного выполнения в календаре с отменой",
+      "url": "https://github.com/aokzhl/steady/issues/14",
+      "status": "published",
+      "database_id": 6386270926,
+      "body_sha256": "a7b6b3ce8703f71e891d95e1d07361bccbd9b274e668dab0fe12656c61279aaa",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        12
+      ],
+      "blocked_by_issue_numbers": [
+        13
+      ],
+      "native_dependencies_set": true
+    },
+    "14": {
+      "plan_id": 14,
+      "number": 15,
+      "title": "[MVP 14] Секундомер: одна сессия и сохранение фактической работы",
+      "url": "https://github.com/aokzhl/steady/issues/15",
+      "status": "published",
+      "database_id": 6386272149,
+      "body_sha256": "51b43a843b82a73fc1e8d86f01a59c3edd1c69b48b169384b73f74ef2ced3a2f",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        2
+      ],
+      "blocked_by_issue_numbers": [
+        3
+      ],
+      "native_dependencies_set": true
+    },
+    "15": {
+      "plan_id": 15,
+      "number": 16,
+      "title": "[MVP 15] Обычный таймер: обратный отсчёт и приращения остатка",
+      "url": "https://github.com/aokzhl/steady/issues/16",
+      "status": "published",
+      "database_id": 6386273434,
+      "body_sha256": "e6d5ce91084b005e2953a3d00eec8431fd89c48811def6f55b804404b9406a55",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        14
+      ],
+      "blocked_by_issue_numbers": [
+        15
+      ],
+      "native_dependencies_set": true
+    },
+    "16": {
+      "plan_id": 16,
+      "number": 17,
+      "title": "[MVP 16] Помодоро: рабочий интервал и ручной отдых",
+      "url": "https://github.com/aokzhl/steady/issues/17",
+      "status": "published",
+      "database_id": 6386274657,
+      "body_sha256": "5097e19fd3f49202336664125f547d47116fbaf2cc8fbcd13ce60add184b2e61",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        15
+      ],
+      "blocked_by_issue_numbers": [
+        16
+      ],
+      "native_dependencies_set": true
+    },
+    "17": {
+      "plan_id": 17,
+      "number": 18,
+      "title": "[MVP 17] Восстановление сессии и пауза при сне или блокировке",
+      "url": "https://github.com/aokzhl/steady/issues/18",
+      "status": "published",
+      "database_id": 6386275866,
+      "body_sha256": "dd6bc86c4ee4465a33b0444cf609a746d53dec7a1dc07a86f3f9e47acf705d7e",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        16
+      ],
+      "blocked_by_issue_numbers": [
+        17
+      ],
+      "native_dependencies_set": true
+    },
+    "18": {
+      "plan_id": 18,
+      "number": 19,
+      "title": "[MVP 18] Профили и собственные параметры задачи/подзадачи",
+      "url": "https://github.com/aokzhl/steady/issues/19",
+      "status": "published",
+      "database_id": 6386276974,
+      "body_sha256": "fcf204ba2454fc04529bc46bb25c299b95d5821db01cf62620cfba91a6bacb0d",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        9,
+        16
+      ],
+      "blocked_by_issue_numbers": [
+        10,
+        17
+      ],
+      "native_dependencies_set": true
+    },
+    "19": {
+      "plan_id": 19,
+      "number": 20,
+      "title": "[MVP 19] Автопереходы помодоро и общий счётчик цикла",
+      "url": "https://github.com/aokzhl/steady/issues/20",
+      "status": "published",
+      "database_id": 6386278134,
+      "body_sha256": "3f1b9cc0f24ec9bc2f2eb78834d5243fc0df1be2988db7e5dfcac5373c4d25f7",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        18
+      ],
+      "blocked_by_issue_numbers": [
+        19
+      ],
+      "native_dependencies_set": true
+    },
+    "20": {
+      "plan_id": 20,
+      "number": 21,
+      "title": "[MVP 20] Управление из строки меню и работа при скрытом окне",
+      "url": "https://github.com/aokzhl/steady/issues/21",
+      "status": "published",
+      "database_id": 6386279200,
+      "body_sha256": "15d0bfc5deb107d49467811c4a4e9547c7cc77d14bd43d35e61f4011f671f565",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        17,
+        19
+      ],
+      "blocked_by_issue_numbers": [
+        18,
+        20
+      ],
+      "native_dependencies_set": true
+    },
+    "21": {
+      "plan_id": 21,
+      "number": 22,
+      "title": "[MVP 21] Монобровь: раскрытие, команды и несколько экранов",
+      "url": "https://github.com/aokzhl/steady/issues/22",
+      "status": "published",
+      "database_id": 6386280389,
+      "body_sha256": "6e61fceebe5f0b350dc8f6a600d3f1ac1666e612facc60cc1e6bfc680fda60dd",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        20
+      ],
+      "blocked_by_issue_numbers": [
+        21
+      ],
+      "native_dependencies_set": true
+    },
+    "22": {
+      "plan_id": 22,
+      "number": 23,
+      "title": "[MVP 22] Выполнение и удаление дел при активной сессии",
+      "url": "https://github.com/aokzhl/steady/issues/23",
+      "status": "published",
+      "database_id": 6386281395,
+      "body_sha256": "260a062158d431e4e0a98929a5bba9e950a82821416b93de50ddd05d9347add1",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        19
+      ],
+      "blocked_by_issue_numbers": [
+        20
+      ],
+      "native_dependencies_set": true
+    },
+    "23": {
+      "plan_id": 23,
+      "number": 24,
+      "title": "[MVP 23] Архив и восстановление проекта без потери истории",
+      "url": "https://github.com/aokzhl/steady/issues/24",
+      "status": "published",
+      "database_id": 6386282337,
+      "body_sha256": "03a1ed88f3c9bcb7282bf561ee6d370b3398a03f493a224ebb4708c92f79ecc5",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        10,
+        14
+      ],
+      "blocked_by_issue_numbers": [
+        11,
+        15
+      ],
+      "native_dependencies_set": true
+    },
+    "24": {
+      "plan_id": 24,
+      "number": 25,
+      "title": "[MVP 24] Хронология: точные запуски и отметки выполнения",
+      "url": "https://github.com/aokzhl/steady/issues/25",
+      "status": "published",
+      "database_id": 6386283701,
+      "body_sha256": "1bb0c0623b61075a0b491ccede04b880fd95a2f6ae8ebf911f8fc25d9284c4ad",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        17,
+        22
+      ],
+      "blocked_by_issue_numbers": [
+        18,
+        23
+      ],
+      "native_dependencies_set": true
+    },
+    "25": {
+      "plan_id": 25,
+      "number": 26,
+      "title": "[MVP 25] Сводка отчёта: периоды, фильтры и суммы без дублей",
+      "url": "https://github.com/aokzhl/steady/issues/26",
+      "status": "published",
+      "database_id": 6386285023,
+      "body_sha256": "53fe64882b01577b7a8637043a05578130d065f123ace52e13fcfe19b04e9f36",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        23,
+        24
+      ],
+      "blocked_by_issue_numbers": [
+        24,
+        25
+      ],
+      "native_dependencies_set": true
+    },
+    "26": {
+      "plan_id": 26,
+      "number": 27,
+      "title": "[MVP 26] sso: регистрация и подтверждение email из приложения",
+      "url": "https://github.com/aokzhl/steady/issues/27",
+      "status": "published",
+      "database_id": 6386286107,
+      "body_sha256": "f6aca39716a6249f7aa4ab8790a148d33d9fb765ad75a53e18ba0be053206ec6",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        1
+      ],
+      "blocked_by_issue_numbers": [
+        2
+      ],
+      "native_dependencies_set": true
+    },
+    "27": {
+      "plan_id": 27,
+      "number": 28,
+      "title": "[MVP 27] Вход, обновление токенов и разделение аккаунтных данных",
+      "url": "https://github.com/aokzhl/steady/issues/28",
+      "status": "published",
+      "database_id": 6386287147,
+      "body_sha256": "3e243841e216f65135b8c68864bcf906edecbf2b7d256ecef66d37ce8f4af7ce",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        17,
+        18,
+        26
+      ],
+      "blocked_by_issue_numbers": [
+        18,
+        19,
+        27
+      ],
+      "native_dependencies_set": true
+    },
+    "28": {
+      "plan_id": 28,
+      "number": 29,
+      "title": "[MVP 28] Восстановление пароля и повторный вход",
+      "url": "https://github.com/aokzhl/steady/issues/29",
+      "status": "published",
+      "database_id": 6386288693,
+      "body_sha256": "290996cb3c1848e05a7b623e33a7186eea2d325c1a8c376597b9af6bca2818da",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        27
+      ],
+      "blocked_by_issue_numbers": [
+        28
+      ],
+      "native_dependencies_set": true
+    },
+    "29": {
+      "plan_id": 29,
+      "number": 30,
+      "title": "[MVP 29] Сохранённый результат доставляется в Focus без дубля",
+      "url": "https://github.com/aokzhl/steady/issues/30",
+      "status": "published",
+      "database_id": 6386289761,
+      "body_sha256": "a8d2b68a545339594faff1b2d083bffbfdce222018eaeca2871dab96bb8ceb9d",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        27
+      ],
+      "blocked_by_issue_numbers": [
+        28
+      ],
+      "native_dependencies_set": true
+    },
+    "30": {
+      "plan_id": 30,
+      "number": 31,
+      "title": "[MVP 30] Очередь: офлайн, повтор после сбоя и смена аккаунта",
+      "url": "https://github.com/aokzhl/steady/issues/31",
+      "status": "published",
+      "database_id": 6386290828,
+      "body_sha256": "b6c35c21002e814e67711238240c62d9bf2c19189c1332fe671125d0630253b2",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        29
+      ],
+      "blocked_by_issue_numbers": [
+        30
+      ],
+      "native_dependencies_set": true
+    },
+    "31": {
+      "plan_id": 31,
+      "number": 32,
+      "title": "[MVP 31] Получение результатов аккаунта и слияние с локальной историей",
+      "url": "https://github.com/aokzhl/steady/issues/32",
+      "status": "published",
+      "database_id": 6386291905,
+      "body_sha256": "d28e12bbb767487bb393be279bb7af0a9d0e67db5f0c9734e5c9f2fed2fed6c5",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        25,
+        29
+      ],
+      "blocked_by_issue_numbers": [
+        26,
+        30
+      ],
+      "native_dependencies_set": true
+    },
+    "32": {
+      "plan_id": 32,
+      "number": 33,
+      "title": "[MVP 32] Добровольный перенос гостевых задач и профилей",
+      "url": "https://github.com/aokzhl/steady/issues/33",
+      "status": "published",
+      "database_id": 6386293393,
+      "body_sha256": "9cc747e13de14bbe053fcccc519564a9720582ea2f0f6d7bfe1adf9372f1fad5",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        29
+      ],
+      "blocked_by_issue_numbers": [
+        30
+      ],
+      "native_dependencies_set": true
+    },
+    "33": {
+      "plan_id": 33,
+      "number": 34,
+      "title": "[MVP 33] Перенос гостевых результатов и восстановление полного импорта",
+      "url": "https://github.com/aokzhl/steady/issues/34",
+      "status": "published",
+      "database_id": 6386294548,
+      "body_sha256": "9cbdb6ce2fb98926a187b71224658482887068b1b51b755054bd33112b646dd8",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        30,
+        31,
+        32
+      ],
+      "blocked_by_issue_numbers": [
+        31,
+        32,
+        33
+      ],
+      "native_dependencies_set": true
+    },
+    "34": {
+      "plan_id": 34,
+      "number": 35,
+      "title": "[MVP 34] Сквозная работа клавиатурой и в узком окне",
+      "url": "https://github.com/aokzhl/steady/issues/35",
+      "status": "published",
+      "database_id": 6386296167,
+      "body_sha256": "1936489c6461644b79b5149b15540616ba8b48fb53b7e8c6caec75c7ece88f2c",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        11,
+        13,
+        21,
+        28,
+        33
+      ],
+      "blocked_by_issue_numbers": [
+        12,
+        14,
+        22,
+        29,
+        34
+      ],
+      "native_dependencies_set": true
+    },
+    "35": {
+      "plan_id": 35,
+      "number": 36,
+      "title": "[MVP 35] Устанавливаемая бета и полная приёмка MVP",
+      "url": "https://github.com/aokzhl/steady/issues/36",
+      "status": "published",
+      "database_id": 6386298258,
+      "body_sha256": "56b5d7cd74cd146c0771039f834bd266c63987036bbbfeb225d48b5ab6c06c08",
+      "parent_linked": true,
+      "blocked_by_plan_ids": [
+        34
+      ],
+      "blocked_by_issue_numbers": [
+        35
+      ],
+      "native_dependencies_set": true
+    }
+  },
+  "verification": {
+    "verified_at_utc": "2026-11-14T06:24:58.787494+00:00",
+    "issue_count": 35,
+    "native_sub_issues": 35,
+    "native_blocking_edges": 51,
+    "acceptance_criteria": 208,
+    "user_stories_covered": 84,
+    "parent_body_title_state_labels_unchanged": true,
+    "product_source_files_unchanged": 17,
+    "frontier_issue_numbers": [
+      2
+    ]
+  }
+}
