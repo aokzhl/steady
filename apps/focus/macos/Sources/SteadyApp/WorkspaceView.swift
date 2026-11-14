@@ -59,6 +59,21 @@ struct WorkspaceView: View {
         .sheet(isPresented: $labelEditorVisible) {
             LabelEditorPanel(workspace: editor.workspace, label: editingLabel)
         }
+        .sheet(isPresented: $editor.timerPromptVisible) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Длительность таймера").font(.headline)
+                Text(editor.timerPromptTask?.title ?? "Без задачи")
+                TextField("Минуты", text: $editor.timerMinutes)
+                    .accessibilityIdentifier("timer-duration-minutes")
+                    .onSubmit { editor.confirmTimer() }
+                if let error = editor.timerPromptError { StorageNotice(message: error) }
+                HStack {
+                    Button("Отмена") { editor.timerPromptVisible = false }.keyboardShortcut(.cancelAction)
+                    Spacer()
+                    Button("Запустить") { editor.confirmTimer() }.keyboardShortcut(.defaultAction)
+                }
+            }.padding(24).frame(width: 340)
+        }
         .task { editor.openWorkspace() }
         .onAppear { editor.reopenWindow = { openWindow(id: "main") } }
         .onChange(of: scenePhase) { _, phase in
@@ -644,7 +659,8 @@ private struct ToolMenu: View {
 
     var body: some View {
         Menu {
-            Button("Таймер · Не задано") {}.disabled(true)
+            Button("Таймер") { editor.requestTimer(task) }
+                .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil)
             Button("Помодоро · Не задано") {}.disabled(true)
             Button("Секундомер · Счёт вверх") { editor.startStopwatch(task) }
                 .disabled(editor.workspace?.activeSession != nil || task?.completedAt != nil)
@@ -672,24 +688,52 @@ private struct ToolMenu: View {
 private struct SessionBar: View {
     @Bindable var editor: WorkspaceEditor
     let session: TimeToolSession
+    @State private var incrementVisible = false
+    @State private var increment = 5
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 16) {
-                Image(systemName: "stopwatch").foregroundStyle(Palette.accent)
+                Image(systemName: session.kind == .timer ? "timer" : "stopwatch").foregroundStyle(Palette.accent)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Секундомер" + (session.isPaused ? " · Пауза" : " · Работа"))
+                    Text((session.kind == .timer ? "Таймер" : "Секундомер") + (session.isPaused ? " · Пауза" : " · Работа"))
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                     Text(session.ownerTitle).font(.system(size: 13, weight: .medium)).lineLimit(1)
                 }
                 Spacer()
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    let elapsed = durationLabel(editor.workspace?.elapsedSeconds ?? 0)
-                    Text(elapsed)
-                        .font(.system(size: 24, weight: .medium, design: .monospaced))
-                        .accessibilityLabel("Прошло активного времени")
-                        .accessibilityValue(elapsed)
-                        .accessibilityIdentifier("session-elapsed")
+                    let elapsed = durationLabel(session.kind == .timer ? (editor.workspace?.remainingSeconds ?? 0) : (editor.workspace?.elapsedSeconds ?? 0))
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Text(elapsed)
+                            .font(.system(size: 24, weight: .medium, design: .monospaced))
+                            .accessibilityLabel(session.kind == .timer ? "Осталось времени" : "Прошло активного времени")
+                            .accessibilityValue(elapsed)
+                            .accessibilityIdentifier("session-elapsed")
+                            .onHover { if $0 && session.kind == .timer { incrementVisible = true } }
+                        if session.kind == .timer {
+                            Text("Факт: " + durationLabel(editor.workspace?.elapsedSeconds ?? 0))
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if session.kind == .timer {
+                    Button { incrementVisible.toggle() } label: { Image(systemName: "plusminus") }
+                        .accessibilityLabel("Изменить оставшееся время")
+                        .accessibilityIdentifier("timer-increment")
+                        .onHover { if $0 { incrementVisible = true } }
+                        .popover(isPresented: $incrementVisible) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Изменить остаток").font(.headline)
+                                Stepper("\(increment > 0 ? "+" : "")\(increment) мин", value: $increment, in: -20...20)
+                                    .accessibilityIdentifier("timer-increment-minutes")
+                                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                                    Text("Будет: " + durationLabel(max(0, (editor.workspace?.remainingSeconds ?? 0) + Double(increment) * 60)))
+                                        .monospacedDigit().accessibilityIdentifier("timer-increment-preview")
+                                }
+                                Button("Применить") { editor.adjustTimer(minutes: increment) }
+                                    .accessibilityIdentifier("timer-increment-apply")
+                            }.padding(18).frame(width: 260)
+                        }
                 }
                 if editor.activeSessionOwner != nil {
                     Button("К текущей задаче", action: editor.showActiveSessionOwner)
@@ -724,9 +768,13 @@ private struct RunHistory: View {
             ForEach(results.reversed()) { result in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
-                        Label("Секундомер", systemImage: "stopwatch")
+                        Label(result.kind == .timer ? "Таймер" : "Секундомер", systemImage: result.kind == .timer ? "timer" : "stopwatch")
                         Spacer()
                         Text(durationLabel(result.durationSeconds)).monospacedDigit()
+                    }
+                    if result.kind == .timer {
+                        Text(result.endReason == .natural ? "Время вышло" : result.endReason == .manual ? "Остаток уменьшен до нуля" : "Остановлен вручную")
+                            .foregroundStyle(.secondary)
                     }
                     Text(result.ownerTitle)
                     Text(historyDate(result.startedAt, zone: result.timeZoneIdentifier) + " — " + historyDate(result.stoppedAt ?? result.startedAt, zone: result.timeZoneIdentifier))

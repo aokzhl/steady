@@ -3,6 +3,9 @@ import Foundation
 
 public enum WorkspaceError: Error, Equatable, LocalizedError {
     case invalidRecurrence
+    case timerDurationRequired
+    case invalidTimerDuration
+    case invalidTimerIncrement
     case invalidDay
     case sessionOccupied
     case completedOwner
@@ -21,6 +24,9 @@ public enum WorkspaceError: Error, Equatable, LocalizedError {
         switch self {
         case .invalidRecurrence:
             "Выберите хотя бы один день недели."
+        case .timerDurationRequired: "Задайте длительность таймера перед запуском."
+        case .invalidTimerDuration: "Длительность таймера должна быть больше нуля."
+        case .invalidTimerIncrement: "Выберите приращение от −20 до +20 минут."
         case .invalidDay:
             "Выберите существующую календарную дату."
         case .sessionOccupied:
@@ -74,7 +80,7 @@ final class SQLiteDatabase {
                 guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
                 return Int(sqlite3_column_int(query, 0))
             }
-            guard version <= 8 else { throw WorkspaceError.unsupportedSchema(version) }
+            guard version <= 9 else { throw WorkspaceError.unsupportedSchema(version) }
             if version == 0 { try migrateToVersionOne() }
             if version < 2 { try migrateToVersionTwo() }
             if version < 3 { try migrateToVersionThree() }
@@ -83,6 +89,7 @@ final class SQLiteDatabase {
             if version < 6 { try migrateToVersionSix() }
             if version < 7 { try migrateToVersionSeven() }
             if version < 8 { try migrateToVersionEight() }
+            if version < 9 { try migrateToVersionNine() }
         } catch {
             sqlite3_close(connection)
             connection = nil
@@ -480,7 +487,7 @@ final class SQLiteDatabase {
             }
             guard (record.completedAt != nil) != completed else { return current }
             if completed, var session = try activeTimeToolSession(), session.occurrenceID == occurrenceID {
-                session.stop(at: instant)
+                if !session.finishTimerIfNeeded(at: instant) { session.stop(at: instant) }
                 try saveTimeToolSession(session)
             }
             let value: Value = completed ? .number(instant.timeIntervalSince1970) : .null
@@ -608,7 +615,33 @@ final class SQLiteDatabase {
         }
     }
 
+    private func migrateToVersionNine() throws {
+        try transaction {
+            try execute("ALTER TABLE time_tool_runs ADD COLUMN timer_budget_seconds REAL")
+            try execute("ALTER TABLE time_tool_runs ADD COLUMN end_reason TEXT")
+            try execute("CREATE TABLE task_timer_settings (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), duration_seconds REAL NOT NULL CHECK(duration_seconds > 0))")
+            try execute("PRAGMA user_version = 9")
+        }
+    }
+
+    func timerDurationSeconds(taskID: UUID) throws -> TimeInterval? {
+        try statement("SELECT duration_seconds FROM task_timer_settings WHERE task_id = ?", [.text(taskID.uuidString)]) { query in
+            let result = sqlite3_step(query)
+            if result == SQLITE_DONE { return nil }
+            guard result == SQLITE_ROW else { throw failure() }
+            return sqlite3_column_double(query, 0)
+        }
+    }
+
+    func startTimer(occurrenceID: UUID?, durationSeconds: TimeInterval?, at instant: Date, timeZone: String) throws {
+        try startTimeTool(kind: .timer, occurrenceID: occurrenceID, durationSeconds: durationSeconds, at: instant, timeZone: timeZone)
+    }
+
     func startStopwatch(occurrenceID: UUID?, at instant: Date, timeZone: String) throws {
+        try startTimeTool(kind: .stopwatch, occurrenceID: occurrenceID, durationSeconds: nil, at: instant, timeZone: timeZone)
+    }
+
+    private func startTimeTool(kind: TimeToolKind, occurrenceID: UUID?, durationSeconds: TimeInterval?, at instant: Date, timeZone: String) throws {
         try transaction {
             guard try activeTimeToolSession() == nil else { throw WorkspaceError.sessionOccupied }
             var owner: TaskRecord?
@@ -619,10 +652,19 @@ final class SQLiteDatabase {
                 guard task.completedAt == nil else { throw WorkspaceError.completedOwner }
                 owner = task
             }
+            var duration = durationSeconds
+            if kind == .timer {
+                if duration == nil, let owner { duration = try timerDurationSeconds(taskID: owner.id) }
+                guard let value = duration else { throw WorkspaceError.timerDurationRequired }
+                guard value.isFinite, value > 0 else { throw WorkspaceError.invalidTimerDuration }
+                if let owner, durationSeconds != nil {
+                    try execute("INSERT INTO task_timer_settings (task_id, duration_seconds) VALUES (?, ?) ON CONFLICT(task_id) DO UPDATE SET duration_seconds = excluded.duration_seconds", [.text(owner.id.uuidString), .number(value)])
+                }
+            }
             let session = TimeToolSession(
-                id: UUID(), kind: .stopwatch, taskID: owner?.id, occurrenceID: owner?.occurrenceID,
+                id: UUID(), kind: kind, taskID: owner?.id, occurrenceID: owner?.occurrenceID,
                 ownerTitle: owner?.title ?? "Без задачи", startedAt: instant, timeZoneIdentifier: timeZone,
-                stoppedAt: nil, segments: [WorkSegment(id: UUID(), startedAt: instant, endedAt: nil)]
+                stoppedAt: nil, segments: [WorkSegment(id: UUID(), startedAt: instant, endedAt: nil)], timerBudgetSeconds: duration
             )
             try saveTimeToolSession(session)
         }
@@ -642,15 +684,23 @@ final class SQLiteDatabase {
     func savePausedSession(_ session: TimeToolSession) throws {
         try transaction {
             guard try activeTimeToolSession()?.id == session.id else { throw WorkspaceError.sessionOccupied }
-            try saveTimeToolSession(session)
+            var saved = session
+            if saved.endReason == .natural, let boundary = saved.segments.last?.endedAt {
+                saved.stop(at: boundary, reason: .natural)
+            }
+            try saveTimeToolSession(saved)
         }
     }
 
-    enum SessionCommand { case pause, resume, stop }
+    enum SessionCommand { case pause, resume, stop, tick, adjust(Int) }
 
     func changeSession(_ command: SessionCommand, at instant: Date) throws {
         try transaction {
             guard var session = try activeTimeToolSession() else { return }
+            if session.finishTimerIfNeeded(at: instant) {
+                try saveTimeToolSession(session)
+                return
+            }
             switch command {
             case .pause: session.closeSegment(at: instant)
             case .resume:
@@ -659,6 +709,19 @@ final class SQLiteDatabase {
                 session.segments.append(WorkSegment(id: UUID(), startedAt: start, endedAt: nil))
             case .stop:
                 session.stop(at: instant)
+            case .tick: return
+            case .adjust(let minutes):
+                guard (-20...20).contains(minutes) else { throw WorkspaceError.invalidTimerIncrement }
+                guard session.kind == .timer, let budget = session.timerBudgetSeconds else { return }
+                let elapsed = session.elapsedSeconds(at: instant)
+                let remaining = max(0, budget - elapsed + Double(minutes) * 60)
+                session.timerBudgetSeconds = elapsed + remaining
+                if remaining == 0 { session.stop(at: instant, reason: .manual) }
+                else if !session.isPaused {
+                    session.closeSegment(at: instant)
+                    let start = max(instant, session.segments.last?.endedAt ?? session.startedAt)
+                    session.segments.append(WorkSegment(id: UUID(), startedAt: start, endedAt: nil))
+                }
             }
             try saveTimeToolSession(session)
         }
@@ -672,7 +735,7 @@ final class SQLiteDatabase {
 
     private func timeToolSessions(stopped: Bool) throws -> [TimeToolSession] {
         try statement("""
-            SELECT id, kind, task_id, occurrence_id, owner_title, started_at, time_zone, stopped_at
+            SELECT id, kind, task_id, occurrence_id, owner_title, started_at, time_zone, stopped_at, timer_budget_seconds, end_reason
             FROM time_tool_runs WHERE stopped_at IS \(stopped ? "NOT NULL" : "NULL") ORDER BY started_at, rowid
             """) { query in
             var sessions: [TimeToolSession] = []
@@ -698,7 +761,9 @@ final class SQLiteDatabase {
                     id: id, kind: kind, taskID: UUID(uuidString: text(query, 2)),
                     occurrenceID: UUID(uuidString: text(query, 3)), ownerTitle: text(query, 4),
                     startedAt: date(query, 5), timeZoneIdentifier: text(query, 6),
-                    stoppedAt: optionalDate(query, 7), segments: segments
+                    stoppedAt: optionalDate(query, 7), segments: segments,
+                    timerBudgetSeconds: sqlite3_column_type(query, 8) == SQLITE_NULL ? nil : sqlite3_column_double(query, 8),
+                    endReason: TimeToolEndReason(rawValue: text(query, 9))
                 ))
                 result = sqlite3_step(query)
             }
@@ -709,14 +774,16 @@ final class SQLiteDatabase {
 
     private func saveTimeToolSession(_ session: TimeToolSession) throws {
         try execute("""
-            INSERT INTO time_tool_runs (id, kind, task_id, occurrence_id, owner_title, started_at, time_zone, stopped_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET stopped_at = excluded.stopped_at
+            INSERT INTO time_tool_runs (id, kind, task_id, occurrence_id, owner_title, started_at, time_zone, stopped_at, timer_budget_seconds, end_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET stopped_at = excluded.stopped_at, timer_budget_seconds = excluded.timer_budget_seconds, end_reason = excluded.end_reason
             """, [.text(session.id.uuidString), .text(session.kind.rawValue),
                   session.taskID.map { .text($0.uuidString) } ?? .null,
                   session.occurrenceID.map { .text($0.uuidString) } ?? .null,
                   .text(session.ownerTitle), .number(session.startedAt.timeIntervalSince1970),
-                  .text(session.timeZoneIdentifier), session.stoppedAt.map { .number($0.timeIntervalSince1970) } ?? .null])
+                  .text(session.timeZoneIdentifier), session.stoppedAt.map { .number($0.timeIntervalSince1970) } ?? .null,
+                  session.timerBudgetSeconds.map { .number($0) } ?? .null,
+                  session.endReason.map { .text($0.rawValue) } ?? .null])
         for (position, segment) in session.segments.enumerated() {
             try execute("""
                 INSERT INTO time_tool_segments (id, run_id, position, started_at, ended_at) VALUES (?, ?, ?, ?, ?)
