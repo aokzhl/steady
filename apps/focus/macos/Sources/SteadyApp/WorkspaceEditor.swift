@@ -317,6 +317,7 @@ final class WorkspaceEditor {
         }
         let saved = workspace?.tasks.first { $0.id == owner.id } ?? owner
         selectedProjectID = saved.projectID
+        period = .all
         showDetails(for: saved)
     }
 

@@ -253,8 +253,8 @@ struct StopwatchTests {
         #expect(reopened.timeToolResults.first?.taskID == old.id)
     }
 
-    @Test
-    func versionFourProjectsNotesAndDraftChoiceSurviveStopwatchMigration() throws {
+    @Test(arguments: [4, 5])
+    func shippedProjectsNotesDatesAndDraftChoiceSurviveStopwatchMigration(version: Int) throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -271,6 +271,16 @@ struct StopwatchTests {
             INSERT INTO task_occurrences VALUES ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', '2026-11-12', 'Asia/Almaty', NULL);
             INSERT INTO creation_draft VALUES (1, '', 'none', NULL, 1, X'7b5c72746631207d', 'Заметка черновика');
             PRAGMA user_version = 4;
+            \(version == 5 ? """
+            CREATE TABLE task_occurrences_v5 (id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id), planned_day TEXT, time_zone TEXT NOT NULL, completed_at REAL);
+            INSERT INTO task_occurrences_v5 SELECT id, task_id, NULL, time_zone, completed_at FROM task_occurrences;
+            DROP TABLE task_occurrences;
+            ALTER TABLE task_occurrences_v5 RENAME TO task_occurrences;
+            ALTER TABLE creation_draft ADD COLUMN planned_day TEXT;
+            ALTER TABLE creation_draft ADD COLUMN day_was_chosen INTEGER NOT NULL DEFAULT 0 CHECK(day_was_chosen IN (0, 1));
+            UPDATE creation_draft SET planned_day = '2027-01-02', day_was_chosen = 1;
+            PRAGMA user_version = 5;
+            """ : "")
             """]
         try fixture.run()
         fixture.waitUntilExit()
@@ -281,11 +291,14 @@ struct StopwatchTests {
         #expect(workspace.projects.first?.title == "Учёба")
         #expect(workspace.projects.first?.color == .green)
         #expect(old.projectID == workspace.projects.first?.id)
+        #expect(old.plannedDay == (version == 5 ? nil : "2026-11-12"))
         #expect(old.note.plainText == "Заметка дела")
         #expect(old.note.rtf == Data([0x7b, 0x5c, 0x72, 0x74, 0x66, 0x31, 0x20, 0x7d]))
         let draft = try #require(workspace.creationDraft)
         #expect(draft.projectID == nil)
         #expect(draft.projectWasChosen)
+        #expect(draft.dayWasChosen == (version == 5))
+        #expect(draft.plannedDay == (version == 5 ? "2027-01-02" : nil))
         #expect(!draft.isEmpty)
         #expect(draft.note.plainText == "Заметка черновика")
         #expect(draft.note.rtf == old.note.rtf)
@@ -297,6 +310,38 @@ struct StopwatchTests {
         #expect(reopened.projects == workspace.projects)
         #expect(reopened.creationDraft == draft)
         #expect(reopened.timeToolResults.first?.durationSeconds == 60)
+    }
+
+    @Test(arguments: [nil, "2027-01-02"] as [String?])
+    func changingOwnerDayKeepsSessionIdentityAndDoesNotChangeMeasuredWork(day: String?) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("steady.sqlite")
+        var instant = Date(timeIntervalSince1970: 1_800_000_000)
+        let workspace = try TaskWorkspace(databaseURL: url, now: { instant })
+        let project = try workspace.createProject(title: "Учёба", color: .green)
+        let note = TaskNote(rtf: Data([0x7b, 0x7d]), plainText: "Заметка")
+        let owner = try workspace.createTask(title: "Владелец", projectID: project.id, plannedDay: day, note: note)
+        let draft = CreationDraft(title: "Черновик", plannedDay: "2027-02-01", note: note)
+        try workspace.saveCreationDraft(draft)
+        try workspace.startStopwatch(occurrenceID: owner.occurrenceID)
+        let runID = try #require(workspace.activeSession?.id)
+        instant += 30
+        try workspace.setPlannedDay(occurrenceID: owner.occurrenceID, day: day == nil ? "2027-01-02" : nil)
+        #expect(workspace.activeSession?.id == runID)
+        #expect(workspace.activeSession?.occurrenceID == owner.occurrenceID)
+        instant += 30
+        try workspace.setCompleted(occurrenceID: owner.occurrenceID, completed: true)
+        let reopened = try TaskWorkspace(databaseURL: url)
+        let saved = try #require(reopened.tasks.first)
+        #expect(saved.id == owner.id)
+        #expect(saved.plannedDay == (day == nil ? "2027-01-02" : nil))
+        #expect(saved.projectID == project.id)
+        #expect(saved.note == note)
+        #expect(reopened.creationDraft == draft)
+        #expect(reopened.timeToolResults.first?.id == runID)
+        #expect(reopened.timeToolResults.first?.durationSeconds == 60)
+        #expect(reopened.activeSession == nil)
     }
 
 }
